@@ -45,10 +45,22 @@ func main() {
 	}
 
 	tobj := spkg.tpkg.Scope().Lookup(stype)
-	typ := tobj.Type().Underlying()
+	typ := tobj.Type()
 	if err := checkGenericBinding(gparams[0], typ); err != nil {
 		log.Fatalf("%s cannot be bound to %s: %v",
 			*subType, gparams[0].typeSpec.Name.Name, err)
+	}
+
+	ts := gparams[0].typeSpec
+	if !ts.Assign.IsValid() {
+		ts.Assign = ts.Type.Pos()
+	}
+	ts.Type = &ast.Ident{Name: stype}
+	for filename, file := range gpkg.apkg.Files {
+		fmt.Printf("==== %s ====\n", filename)
+		if err := printFile(os.Stdout, gpkg.fset, file); err != nil {
+			log.Fatalf("%s: %v", filename, err)
+		}
 	}
 }
 
@@ -118,7 +130,7 @@ func genericParams(pkg *Package) []*GenericParam {
 		for _, ts := range tspecs {
 			gps = append(gps, &GenericParam{
 				typeSpec: ts,
-				typ:      pkg.info.Defs[ts.Name].Type().Underlying(),
+				typ:      pkg.info.Defs[ts.Name].Type(),
 			})
 		}
 	}
@@ -126,9 +138,10 @@ func genericParams(pkg *Package) []*GenericParam {
 }
 
 func checkGenericBinding(param *GenericParam, typ types.Type) error {
-	switch pt := param.typ.(type) {
+	switch pt := param.typ.Underlying().(type) {
 	case *types.Interface:
-		if types.Implements(typ, pt) {
+		iface := newSubInterface(pt, param, typ)
+		if types.Implements(typ, iface) {
 			return nil
 		} else {
 			return fmt.Errorf("%s does not implement %s", typ, pt)
@@ -136,6 +149,34 @@ func checkGenericBinding(param *GenericParam, typ types.Type) error {
 	default:
 		return fmt.Errorf("unknown underlying type: %T\n", pt)
 	}
+}
+
+// Substitute stype for occurrences of the param type in iface, returning a new interface type.
+func newSubInterface(iface *types.Interface, param *GenericParam, stype types.Type) *types.Interface {
+	var nms []*types.Func
+	for i := 0; i < iface.NumMethods(); i++ {
+		m := iface.Method(i)
+		sig := m.Type().(*types.Signature)
+		params := subTuple(sig.Params(), param.typ, stype)
+		results := subTuple(sig.Results(), param.typ, stype)
+		nsig := types.NewSignature(sig.Recv(), params, results, sig.Variadic())
+		nm := types.NewFunc(m.Pos(), m.Pkg(), m.Name(), nsig)
+		nms = append(nms, nm)
+	}
+	ni := types.NewInterface(nms, nil)
+	return ni.Complete()
+}
+
+func subTuple(t *types.Tuple, old, new types.Type) *types.Tuple {
+	var vs []*types.Var
+	for i := 0; i < t.Len(); i++ {
+		v := t.At(i)
+		if types.Identical(v.Type(), old) {
+			v = types.NewVar(v.Pos(), v.Pkg(), v.Name(), new)
+		}
+		vs = append(vs, v)
+	}
+	return types.NewTuple(vs...)
 }
 
 func dumpTypeSpec(ts *ast.TypeSpec, info *types.Info) {
