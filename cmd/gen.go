@@ -38,10 +38,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// gparams := genericParams(gpkg)
-	// if len(gparams) != 1 {
-	// 	log.Fatal("need exactly one generic param")
-	// }
 	var bindings []*Binding
 	for _, arg := range flag.Args() {
 		sa, err := parseSubstitutionArg(arg)
@@ -68,29 +64,19 @@ func main() {
 		log.Fatal(err)
 	}
 	if err := printPackage(gpkg, tempOutDir); err != nil {
+		if err := os.Remove(tempOutDir); err != nil {
+			log.Printf("removing %s: %v", tempOutDir, err)
+		}
 		log.Fatal(err)
 	}
-
-	// if len(args) > 1 {
-	// 	log.Fatal("only one for now")
-	// }
-
-	// if err := checkGenericBinding(gparams[0], typ); err != nil {
-	// 	log.Fatalf("%s cannot be bound to %s: %v",
-	// 		st, gparams[0].typeSpec.Name.Name, err)
-	// }
-
-	// ts := gparams[0].typeSpec
-	// if !ts.Assign.IsValid() {
-	// 	ts.Assign = ts.Type.Pos()
-	// }
-	// ts.Type = &ast.Ident{Name: stype}
-	// for filename, file := range gpkg.apkg.Files {
-	// 	fmt.Printf("==== %s ====\n", filename)
-	// 	if err := printFile(os.Stdout, gpkg.fset, file); err != nil {
-	// 		log.Fatalf("%s: %v", filename, err)
-	// 	}
-	// }
+	destDir := filepath.Join(*outputDir, gpkg.apkg.Name)
+	if err := os.RemoveAll(destDir); err != nil {
+		log.Fatal(err)
+	}
+	if err := os.Rename(tempOutDir, destDir); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("wrote to %s\n", destDir)
 }
 
 func requireFlag(flag, val string) {
@@ -161,8 +147,16 @@ func checkBinding(param, arg *types.TypeName) error {
 	switch putype := ptype.Underlying().(type) {
 	case *types.Interface:
 		iface := newSubInterface(putype, ptype, atype)
-		if !types.Implements(atype, iface) {
-			return fmt.Errorf("%s.%s does not implement %s", arg.Pkg().Path(), arg.Name(), ptype)
+		method, wrongType := types.MissingMethod(atype, iface, true)
+		if method != nil {
+			var msg string
+			if wrongType {
+				msg = "has wrong type"
+			} else {
+				msg = "is missing"
+			}
+			return fmt.Errorf("%s.%s does not implement %s: method %s %s", arg.Pkg().Path(), arg.Name(), ptype,
+				method.Name(), msg)
 		}
 		return nil
 	default:
@@ -390,13 +384,8 @@ func genericTypeSpecs(file *ast.File) []*ast.TypeSpec {
 }
 
 func printPackage(pkg *Package, dir string) error {
-	outdir := filepath.Join(dir, pkg.apkg.Name)
-	if err := os.Mkdir(outdir, os.ModePerm); err != nil {
-		return err
-	}
 	for filename, file := range pkg.apkg.Files {
-		outfile := filepath.Join(outdir, filepath.Base(filename))
-		fmt.Printf("writing to file %s\n", outfile)
+		outfile := filepath.Join(dir, filepath.Base(filename))
 		f, err := os.Create(outfile)
 		if err != nil {
 			return err
@@ -411,86 +400,3 @@ func printPackage(pkg *Package, dir string) error {
 	}
 	return nil
 }
-
-// func printFile(w io.Writer, fset *token.FileSet, file *ast.File) error {
-// 	conf := &printer.Config{
-// 		Mode:     printer.UseSpaces,
-// 		Tabwidth: 4,
-// 	}
-// 	return conf.Fprint(w, fset, file)
-// }
-
-// func cgtext(cgs []*ast.CommentGroup) string {
-// 	var ss []string
-// 	for _, cg := range cgs {
-// 		ss = append(ss, cg.Text())
-// 	}
-// 	return strings.Join(ss, ", ")
-// }
-
-// ast.Inspect(file, func(n ast.Node) bool {
-// 	if n == nil {
-// 		level--
-// 	} else {
-// 		fmt.Printf("%snode %v (%T), comments %s\n", strings.Repeat("  ", level), n, n, cgtext(cm[n]))
-// 		level++
-// 	}
-// 	return true
-// })
-
-// func processDir(dir string) error {
-// 	fset := token.NewFileSet()
-// 	pkgs, err := parser.ParseDir(fset, dir, nil, parser.ParseComments)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	for _, pkg := range pkgs {
-// 		var files []*ast.File
-// 		for _, file := range pkg.Files {
-// 			files = append(files, file)
-// 		}
-// 		info := &types.Info{
-// 			Defs:  make(map[*ast.Ident]types.Object),
-// 			Uses:  make(map[*ast.Ident]types.Object),
-// 			Types: make(map[ast.Expr]types.TypeAndValue),
-// 		}
-// 		conf := types.Config{Importer: importer.Default()}
-// 		_, err := conf.Check("PKG", fset, files, info)
-// 		if err != nil {
-// 			return err
-// 		}
-// 		for filename, file := range pkg.Files {
-// 			err := processFile(filename, fset, file, info)
-// 			if err != nil {
-// 				return err
-// 			}
-// 			// if err := printFile(os.Stdout, fset, file); err != nil {
-// 			// 	return err
-// 			// }
-// 		}
-// 	}
-// 	return nil
-// }
-
-// func processFile(filename string, fset *token.FileSet, file *ast.File, info *types.Info) error {
-// 	fmt.Printf("== file %s ==\n", filename)
-// 	tspecs := genericTypeSpecs(file)
-// 	for _, ts := range tspecs {
-// 		gparam := newGenericParam(ts, info)
-// 		sub := &Substitution{
-// 			expr: &ast.Ident{
-// 				//NamePos: ts.Type.Pos(),
-// 				Name: "int",
-// 			},
-// 			typ: types.Typ[types.Int],
-// 		}
-// 		if err := checkGenericBinding(gparam, sub); err != nil {
-// 			return err
-// 		}
-// 		if !ts.Assign.IsValid() {
-// 			ts.Assign = ts.Type.Pos()
-// 		}
-// 		ts.Type = sub.expr
-// 	}
-// 	return nil
-// }
