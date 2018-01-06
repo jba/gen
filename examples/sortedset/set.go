@@ -1,7 +1,6 @@
 package set
 
-// go:gen
-type T interface { // If we make T a type alias, it complains about recursive alias.
+type T interface {
 	Less(T) bool
 }
 
