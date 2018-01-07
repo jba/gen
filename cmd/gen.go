@@ -122,17 +122,21 @@ func argToBinding(arg *SubstitutionArg, gpkg *Package) (*Binding, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s is not a named type in package %s", arg.param, gpkg)
 	}
-	spkg, err := loadPackage(arg.subPath)
+	imp := importer.Default()
+	tpkg, err := imp.Import(arg.subPath)
 	if err != nil {
-		return nil, err
+		tpkg, err = importer.For("source", nil).Import(arg.subPath)
+		if err != nil {
+			return nil, fmt.Errorf("source importer says: %v", err)
+		}
 	}
-	sobj := spkg.tpkg.Scope().Lookup(arg.subTypename)
+	sobj := tpkg.Scope().Lookup(arg.subTypename)
 	if sobj == nil {
-		return nil, fmt.Errorf("cannot find %s in package %s", arg.subTypename, spkg.tpkg.Name())
+		return nil, fmt.Errorf("cannot find %s in package %s", arg.subTypename, tpkg.Name())
 	}
 	stn, ok := sobj.(*types.TypeName)
 	if !ok {
-		return nil, fmt.Errorf("%s is not a named type in package %s", arg.subTypename, spkg)
+		return nil, fmt.Errorf("%s is not a named type in package %s", arg.subTypename, tpkg.Path())
 	}
 	if err := checkBinding(gtn, stn); err != nil {
 		return nil, err
@@ -256,15 +260,17 @@ func addImport(file *ast.File, name, path string) {
 		file.Decls = ds
 	}
 	d := file.Decls[0].(*ast.GenDecl)
+	var nameID *ast.Ident
+	if name != filepath.Base(path) {
+		nameID = &ast.Ident{Name: name}
+	}
 	d.Specs = append(d.Specs, &ast.ImportSpec{
-		Name: &ast.Ident{Name: name},
+		Name: nameID,
 		Path: &ast.BasicLit{Value: `"` + path + `"`, Kind: token.STRING},
 	})
 	if len(d.Specs) > 1 && !d.Lparen.IsValid() {
-		d.Lparen = d.Specs[0].Pos()
+		d.Lparen = file.Package
 	}
-	//ast.Print(nil, file.Decls[0])
-	//fmt.Printf("%#v\n", file.Decls[0].(*ast.GenDecl).Specs[0])
 }
 
 // Make an ast.Node that corresponds to the type.
@@ -284,25 +290,6 @@ type GenericParam struct {
 	typeSpec *ast.TypeSpec
 	typ      types.Type
 }
-
-// type Substitution struct {
-// 	expr ast.Expr
-// 	typ  types.Type
-// }
-
-// func genericParams(pkg *Package) []*GenericParam {
-// 	var gps []*GenericParam
-// 	for _, file := range pkg.apkg.Files {
-// 		tspecs := genericTypeSpecs(file)
-// 		for _, ts := range tspecs {
-// 			gps = append(gps, &GenericParam{
-// 				typeSpec: ts,
-// 				typ:      pkg.info.Defs[ts.Name].Type(),
-// 			})
-// 		}
-// 	}
-// 	return gps
-// }
 
 // Substitute atype for occurrences of the param type in iface, returning a new interface type.
 func newSubInterface(iface *types.Interface, param, arg types.Type) *types.Interface {
