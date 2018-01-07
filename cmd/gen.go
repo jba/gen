@@ -195,7 +195,7 @@ func checkBinding(param *types.TypeName, atype types.Type) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("unknown underlying type: %T\n", ptype)
+		return fmt.Errorf("type of param %s must be interface, not %T\n", param.Name(), ptype)
 	}
 	return nil
 }
@@ -256,6 +256,11 @@ func loadPackage(path string) (*Package, error) {
 func substitutePackage(gpkg *Package, bindings []*Binding, pkgName string) error {
 	gpkg.apkg.Name = pkgName
 	for filename, file := range gpkg.apkg.Files {
+		// Skip test files. They probably have concrete implementations of the
+		// type parameters, so we can't specialize them.
+		if strings.HasSuffix(filename, "_test.go") {
+			continue
+		}
 		if err := substituteFile(filename, bindings, gpkg.fset, file, pkgName); err != nil {
 			return err
 		}
@@ -408,6 +413,9 @@ func genericTypeSpecs(file *ast.File) []*ast.TypeSpec {
 
 func printPackage(pkg *Package, dir string) error {
 	for filename, file := range pkg.apkg.Files {
+		if strings.HasSuffix(filename, "_test.go") {
+			continue
+		}
 		outfile := filepath.Join(dir, filepath.Base(filename))
 		f, err := os.Create(outfile)
 		if err != nil {
