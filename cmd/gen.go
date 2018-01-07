@@ -182,7 +182,8 @@ func checkBinding(param *types.TypeName, atype types.Type) error {
 	switch putype := ptype.Underlying().(type) {
 	case *types.Interface:
 		iface := newSubInterface(putype, ptype, atype)
-		method, wrongType := types.MissingMethod(atype, iface, true)
+		augType := augmentedType(atype)
+		method, wrongType := types.MissingMethod(augType, iface, true)
 		if method != nil {
 			var msg string
 			if wrongType {
@@ -198,6 +199,30 @@ func checkBinding(param *types.TypeName, atype types.Type) error {
 		return fmt.Errorf("type of param %s must be interface, not %T\n", param.Name(), ptype)
 	}
 	return nil
+}
+
+// Comparable types behave like they implement Equal(T) bool (if they don't already).
+// Ordered types (which are only basic types) behave like they implement Less(T) bool, Greater(T) bool, LessEqual(T) bool and GreaterEqual(T) bool.
+func augmentedType(t types.Type) types.Type {
+	parm := func(t types.Type) *types.Var {
+		return types.NewParam(token.NoPos, nil, "", t)
+	}
+	sig := types.NewSignature(parm(t), types.NewTuple(parm(t)), types.NewTuple(parm(types.Typ[types.Bool])), false)
+	var methods []*types.Func
+	mset := types.NewMethodSet(t)
+	if types.Comparable(t) {
+		if mset.Lookup(nil, "Equal") != nil {
+			log.Printf("not augmenting comparable type %s with Equal because it already has an equal method", t)
+		} else {
+			methods = append(methods, types.NewFunc(token.NoPos, nil, "Equal", sig))
+		}
+	}
+	if bt, ok := t.(*types.Basic); ok && (bt.Info()&types.IsOrdered != 0) {
+		for _, name := range []string{"Less", "Greater", "LessEqual", "GreaterEqual"} {
+			methods = append(methods, types.NewFunc(token.NoPos, nil, name, sig))
+		}
+	}
+	return types.NewNamed(types.NewTypeName(token.NoPos, nil, "TYPENAME", t), t.Underlying(), methods)
 }
 
 type Package struct {
