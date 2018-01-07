@@ -399,43 +399,6 @@ func dumpTypeSpec(ts *ast.TypeSpec, info *types.Info) {
 	}
 }
 
-// Collect all top-level type specs that have the right comment.
-func genericTypeSpecs(file *ast.File) []*ast.TypeSpec {
-	const want = "go:gen"
-	var specs []*ast.TypeSpec
-	ast.Inspect(file, func(n ast.Node) bool {
-		if _, ok := n.(*ast.File); ok {
-			return true
-		}
-		gd, ok := n.(*ast.GenDecl)
-		if !ok || gd.Tok != token.TYPE {
-			return false
-		}
-		if strings.TrimSpace(gd.Doc.Text()) == want {
-			if len(gd.Specs) != 1 {
-				log.Fatal("comment on type group with > 1 spec")
-			}
-			specs = append(specs, gd.Specs[0].(*ast.TypeSpec))
-			return false
-		}
-		for _, spec := range gd.Specs {
-			ts := spec.(*ast.TypeSpec)
-			if strings.TrimSpace(ts.Doc.Text()) == want {
-				specs = append(specs, ts)
-			}
-		}
-		return false
-	})
-	// Skip alias check (for now) because "type T = interface{...}" fails with
-	// recursive alias if the interface methods mention T.
-	// for _, s := range specs {
-	// 	if !s.Assign.IsValid() {
-	// 		log.Fatalf("%s: not a type alias decl", s)
-	// 	}
-	// }
-	return specs
-}
-
 func printPackage(pkg *Package, dir string) error {
 	for filename, file := range pkg.apkg.Files {
 		if strings.HasSuffix(filename, "_test.go") {
