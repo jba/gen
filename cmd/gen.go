@@ -1,6 +1,8 @@
 // TODO
-// - Support types without packages, like string
 // - Support unnamed types, like []geo.Point or map[string]bool
+// - Eq interface for ==
+// - CanNil interface for nil
+// - type assertions
 
 package main
 
@@ -89,6 +91,27 @@ func requireFlag(flag, val string) {
 	}
 }
 
+func printPackage(pkg *Package, dir string) error {
+	for filename, file := range pkg.apkg.Files {
+		if strings.HasSuffix(filename, "_test.go") {
+			continue
+		}
+		outfile := filepath.Join(dir, filepath.Base(filename))
+		f, err := os.Create(outfile)
+		if err != nil {
+			return err
+		}
+		if err := format.Node(f, pkg.fset, file); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type compiledThenSourceImporter struct {
 	defaultImporter types.Importer
 	sourceImporter  types.Importer
@@ -131,8 +154,9 @@ func parseBindingSpec(s string) (*BindingSpec, error) {
 }
 
 type Binding struct {
-	param *types.TypeName
-	arg   types.Type
+	param    *types.TypeName
+	arg      types.Type
+	rewrites []*rewrite
 }
 
 func specToBinding(spec *BindingSpec, gpkg *Package, imp types.Importer) (*Binding, error) {
@@ -173,7 +197,10 @@ func specToBinding(spec *BindingSpec, gpkg *Package, imp types.Importer) (*Bindi
 	if err := checkBinding(gtn, atype); err != nil {
 		return nil, err
 	}
-	return &Binding{param: gtn, arg: atype}, nil
+	return &Binding{
+		param: gtn,
+		arg:   atype,
+	}, nil
 }
 
 // Check that a binding is valid: that the arg can be substituted for the param.
@@ -201,6 +228,31 @@ func checkBinding(param *types.TypeName, atype types.Type) error {
 	return nil
 }
 
+type augmentMethod struct {
+	name string      // e.g. Equal
+	tok  token.Token // e.g. ==
+}
+
+func augmentedMethods(t types.Type) []augmentMethod {
+	var ams []augmentMethod
+	mset := types.NewMethodSet(t)
+	if types.Comparable(t) {
+		if mset.Lookup(nil, "Equal") != nil {
+			log.Printf("not augmenting comparable type %s with Equal because it already has an equal method", t)
+		} else {
+			ams = append(ams, augmentMethod{"Equal", token.EQL})
+		}
+	}
+	if bt, ok := t.(*types.Basic); ok && (bt.Info()&types.IsOrdered != 0) {
+		ams = append(ams,
+			augmentMethod{"Less", token.LSS},
+			augmentMethod{"Greater", token.GTR},
+			augmentMethod{"LessEqual", token.LEQ},
+			augmentMethod{"GreaterEqual", token.GEQ})
+	}
+	return ams
+}
+
 // Comparable types behave like they implement Equal(T) bool (if they don't already).
 // Ordered types (which are only basic types) behave like they implement Less(T) bool, Greater(T) bool, LessEqual(T) bool and GreaterEqual(T) bool.
 func augmentedType(t types.Type) types.Type {
@@ -209,18 +261,8 @@ func augmentedType(t types.Type) types.Type {
 	}
 	sig := types.NewSignature(parm(t), types.NewTuple(parm(t)), types.NewTuple(parm(types.Typ[types.Bool])), false)
 	var methods []*types.Func
-	mset := types.NewMethodSet(t)
-	if types.Comparable(t) {
-		if mset.Lookup(nil, "Equal") != nil {
-			log.Printf("not augmenting comparable type %s with Equal because it already has an equal method", t)
-		} else {
-			methods = append(methods, types.NewFunc(token.NoPos, nil, "Equal", sig))
-		}
-	}
-	if bt, ok := t.(*types.Basic); ok && (bt.Info()&types.IsOrdered != 0) {
-		for _, name := range []string{"Less", "Greater", "LessEqual", "GreaterEqual"} {
-			methods = append(methods, types.NewFunc(token.NoPos, nil, name, sig))
-		}
+	for _, am := range augmentedMethods(t) {
+		methods = append(methods, types.NewFunc(token.NoPos, nil, am.name, sig))
 	}
 	return types.NewNamed(types.NewTypeName(token.NoPos, nil, "TYPENAME", t), t.Underlying(), methods)
 }
@@ -279,6 +321,16 @@ func loadPackage(path string) (*Package, error) {
 }
 
 func substitutePackage(gpkg *Package, bindings []*Binding, pkgName string) error {
+	var rws []rewrite
+	for _, b := range bindings {
+		for _, am := range augmentedMethods(b.arg) {
+			rws = append(rws, rewrite{
+				argType:    b.param.Type(),
+				methodName: am.name,
+				op:         am.tok,
+			})
+		}
+	}
 	gpkg.apkg.Name = pkgName
 	for filename, file := range gpkg.apkg.Files {
 		// Skip test files. They probably have concrete implementations of the
@@ -286,14 +338,14 @@ func substitutePackage(gpkg *Package, bindings []*Binding, pkgName string) error
 		if strings.HasSuffix(filename, "_test.go") {
 			continue
 		}
-		if err := substituteFile(filename, bindings, gpkg.fset, file, pkgName); err != nil {
+		if err := substituteFile(filename, bindings, rws, gpkg.info, gpkg.fset, file, pkgName); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func substituteFile(filename string, bindings []*Binding, fset *token.FileSet, file *ast.File, name string) error {
+func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, info *types.Info, fset *token.FileSet, file *ast.File, name string) error {
 	file.Name.Name = name
 	for _, b := range bindings {
 		paramPath, _ := astutil.PathEnclosingInterval(file, b.param.Pos(), b.param.Pos())
@@ -311,7 +363,7 @@ func substituteFile(filename string, bindings []*Binding, fset *token.FileSet, f
 		}
 		typeSpec.Type = exprForType(b.arg)
 	}
-	return nil
+	return replaceCode(file, rewrites, info)
 }
 
 func addImport(file *ast.File, name, path string) {
@@ -385,37 +437,284 @@ func subTuple(t *types.Tuple, old, new types.Type) *types.Tuple {
 	return types.NewTuple(vs...)
 }
 
-func dumpTypeSpec(ts *ast.TypeSpec, info *types.Info) {
-	fmt.Printf("TypeSpec %q:\n", ts.Name.Name)
-	typ := info.Defs[ts.Name].Type()
-	ut := typ.Underlying()
-	switch ut := ut.(type) {
-	case *types.Interface:
-		for i := 0; i < ut.NumMethods(); i++ {
-			fmt.Printf("%d: %v\n", i, ut.Method(i))
-		}
-	default:
-		fmt.Printf("unknown underlying type: %T\n", ut)
+// rewrite a method to a binary operator
+type rewrite struct {
+	argType    types.Type // both arg and receiver type
+	methodName string
+	op         token.Token
+}
+
+func (r *rewrite) match(e ast.Expr, info *types.Info) (ast.Expr, bool) {
+	s, ok := e.(*ast.SelectorExpr)
+	if !ok {
+		return nil, false
+	}
+	if s.Sel.Name != r.methodName {
+		return nil, false
+	}
+	tv, ok := info.Types[s.X]
+	if !ok {
+		log.Fatalf("no type info for expression %s", s.X)
+	}
+	if !types.Identical(tv.Type, r.argType) {
+		return nil, false
+	}
+	return s.X, true
+}
+
+// e.g. func(a, b T) bool { return a < b }
+func twoArgOpFuncLit(paramName string, tok token.Token) *ast.FuncLit {
+	return &ast.FuncLit{
+		Type: funcType(
+			&ast.Field{Names: []*ast.Ident{id("a"), id("b")}, Type: id(paramName)},
+			&ast.Field{Type: id("bool")},
+		),
+		Body: returnStmtBlock(&ast.BinaryExpr{X: id("a"), Op: tok, Y: id("b")}),
 	}
 }
 
-func printPackage(pkg *Package, dir string) error {
-	for filename, file := range pkg.apkg.Files {
-		if strings.HasSuffix(filename, "_test.go") {
-			continue
+// e.g.
+// func(a T) func (b T) bool {
+//   return func(b T) bool { return a < b }
+// }(x)
+func oneArgOpFuncCall(e ast.Expr, paramName string, tok token.Token) *ast.CallExpr {
+	return &ast.CallExpr{
+		Fun: &ast.FuncLit{
+			Type: funcType(
+				&ast.Field{Names: []*ast.Ident{id("a")}, Type: id(paramName)},
+				&ast.Field{Type: funcType(&ast.Field{Type: id(paramName)}, &ast.Field{Type: id("bool")})},
+			),
+			Body: returnStmtBlock(&ast.FuncLit{
+				Type: funcType(
+					&ast.Field{Names: []*ast.Ident{id("b")}, Type: id(paramName)},
+					&ast.Field{Type: id("bool")}),
+				Body: returnStmtBlock(&ast.BinaryExpr{X: id("a"), Op: tok, Y: id("b")}),
+			}),
+		},
+		Args: []ast.Expr{e},
+	}
+}
+
+func id(name string) *ast.Ident {
+	return &ast.Ident{Name: name}
+}
+
+func funcType(fields ...*ast.Field) *ast.FuncType {
+	// Assume last field is return value.
+	return &ast.FuncType{
+		Params: &ast.FieldList{
+			List: fields[:len(fields)-1],
+		},
+		Results: &ast.FieldList{
+			List: fields[len(fields)-1:],
+		},
+	}
+}
+
+func returnStmtBlock(e ast.Expr) *ast.BlockStmt {
+	return &ast.BlockStmt{
+		List: []ast.Stmt{
+			&ast.ReturnStmt{Results: []ast.Expr{e}},
+		},
+	}
+}
+
+func replaceCode(file *ast.File, rewrites []rewrite, info *types.Info) error {
+	replaceExpr(file, func(ep *ast.Expr) bool {
+		switch e := (*ep).(type) {
+		case *ast.CallExpr:
+			for _, r := range rewrites {
+				if x, ok := r.match(e.Fun, info); ok {
+					*ep = &ast.BinaryExpr{
+						X:  x,
+						Op: r.op,
+						Y:  e.Args[0],
+					}
+					break
+				}
+			}
+
+		case *ast.SelectorExpr:
+			// Not a call, because we would have caught that above. A method expression or value,
+			// like t.Less or T.Less.
+			for _, r := range rewrites {
+				if x, ok := r.match(e, info); ok {
+					name := r.argType.(*types.Named).Obj().Name()
+					// The function denoted by e has one or two arguments.
+					if info.Types[e].Type.(*types.Signature).Params().Len() == 2 {
+						*ep = twoArgOpFuncLit(name, r.op)
+					} else {
+						*ep = oneArgOpFuncCall(x, name, r.op)
+					}
+					break
+				}
+			}
 		}
-		outfile := filepath.Join(dir, filepath.Base(filename))
-		f, err := os.Create(outfile)
-		if err != nil {
-			return err
-		}
-		if err := format.Node(f, pkg.fset, file); err != nil {
-			f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
+		return true
+	})
+	return nil
+}
+
+func replaceExpr(n ast.Node, f func(*ast.Expr) bool) {
+	rep := func(pe *ast.Expr) {
+		if f(pe) {
+			replaceExpr(*pe, f)
 		}
 	}
-	return nil
+
+	elist := func(es []ast.Expr) {
+		for i := range es {
+			rep(&es[i])
+		}
+	}
+
+	slist := func(ss []ast.Stmt) {
+		for _, s := range ss {
+			replaceExpr(s, f)
+		}
+	}
+
+	dlist := func(ds []ast.Decl) {
+		for _, d := range ds {
+			replaceExpr(d, f)
+		}
+	}
+
+	switch n := n.(type) {
+	case *ast.AssignStmt:
+		elist(n.Lhs)
+		elist(n.Rhs)
+
+	case *ast.BinaryExpr:
+		rep(&n.X)
+		rep(&n.Y)
+
+	case *ast.BlockStmt:
+		slist(n.List)
+
+	case *ast.CallExpr:
+		rep(&n.Fun)
+		elist(n.Args)
+
+	case *ast.CaseClause:
+		elist(n.List)
+		slist(n.Body)
+
+	case *ast.CommClause:
+		replaceExpr(n.Comm, f)
+		slist(n.Body)
+
+	case *ast.CompositeLit:
+		rep(&n.Type)
+		elist(n.Elts)
+
+	case *ast.DeclStmt:
+		replaceExpr(n.Decl, f)
+
+	case *ast.DeferStmt:
+		//TODO: what if we need to replace the call itself?
+		// e.g. defer t.Less(u)
+		replaceExpr(n.Call, f)
+
+	case *ast.ExprStmt:
+		rep(&n.X)
+
+	case *ast.File:
+		dlist(n.Decls)
+
+	case *ast.ForStmt:
+		replaceExpr(n.Init, f)
+		rep(&n.Cond)
+		replaceExpr(n.Post, f)
+		replaceExpr(n.Body, f)
+
+	case *ast.FuncDecl:
+		replaceExpr(n.Body, f)
+
+	case *ast.FuncLit:
+		replaceExpr(n.Body, f)
+
+	case *ast.GenDecl:
+		for _, s := range n.Specs {
+			replaceExpr(s, f)
+		}
+
+	case *ast.GoStmt:
+		//TODO: what if we need to replace the call itself?
+		// e.g. go t.Less(u)
+		replaceExpr(n.Call, f)
+
+	case *ast.IfStmt:
+		replaceExpr(n.Init, f)
+		rep(&n.Cond)
+		replaceExpr(n.Body, f)
+		replaceExpr(n.Else, f)
+
+	case *ast.IncDecStmt:
+		rep(&n.X)
+
+	case *ast.IndexExpr:
+		rep(&n.X)
+		rep(&n.Index)
+
+	case *ast.KeyValueExpr:
+		rep(&n.Key)
+		rep(&n.Value)
+
+	case *ast.LabeledStmt:
+		replaceExpr(n.Stmt, f)
+
+	case *ast.ParenExpr:
+		rep(&n.X)
+
+	case *ast.RangeStmt:
+		rep(&n.Key)
+		rep(&n.Value)
+		rep(&n.X)
+		replaceExpr(n.Body, f)
+
+	case *ast.ReturnStmt:
+		elist(n.Results)
+
+	case *ast.SelectStmt:
+		replaceExpr(n.Body, f)
+
+	case *ast.SelectorExpr:
+		rep(&n.X)
+
+	case *ast.SendStmt:
+		rep(&n.Chan)
+		rep(&n.Value)
+
+	case *ast.SliceExpr:
+		rep(&n.X)
+		rep(&n.Low)
+		rep(&n.High)
+		rep(&n.Max)
+
+	case *ast.StarExpr:
+		rep(&n.X)
+
+	case *ast.SwitchStmt:
+		replaceExpr(n.Init, f)
+		rep(&n.Tag)
+		replaceExpr(n.Body, f)
+
+	case *ast.TypeAssertExpr:
+		rep(&n.X)
+		// Don't do n.Type because it's a type.
+
+	case *ast.TypeSwitchStmt:
+		replaceExpr(n.Init, f)
+		replaceExpr(n.Assign, f)
+		replaceExpr(n.Body, f)
+
+	case *ast.UnaryExpr:
+		rep(&n.X)
+
+	case *ast.ValueSpec:
+		elist(n.Values)
+
+		// Ignore all other node types.
+	}
 }

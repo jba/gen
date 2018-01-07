@@ -22,3 +22,16 @@ func (s Set) Contains(x T) bool {
 	}
 	return false
 }
+
+func foo(arg T) bool {
+	return invoke(T.Less, arg)
+}
+
+func bar(arg T) bool {
+	f := arg.Less
+	return f(arg)
+}
+
+func invoke(f func(T, T) bool, arg T) bool {
+	return f(arg, arg)
+}
