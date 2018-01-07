@@ -38,13 +38,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	argImporter := compiledThenSourceImporter{
+		importer.Default(),
+		importer.For("source", nil),
+	}
 	var bindings []*Binding
 	for _, arg := range flag.Args() {
 		sa, err := parseSubstitutionArg(arg)
 		if err != nil {
 			log.Fatal(err)
 		}
-		b, err := argToBinding(sa, gpkg)
+		b, err := argToBinding(sa, gpkg, argImporter)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -85,10 +89,26 @@ func requireFlag(flag, val string) {
 	}
 }
 
+type compiledThenSourceImporter struct {
+	defaultImporter types.Importer
+	sourceImporter  types.Importer
+}
+
+func (c compiledThenSourceImporter) Import(path string) (*types.Package, error) {
+	p, err := c.defaultImporter.Import(path)
+	if err != nil {
+		p, err = c.sourceImporter.Import(path)
+		if err != nil {
+			return nil, fmt.Errorf("importer: %v", err)
+		}
+	}
+	return p, nil
+}
+
 type SubstitutionArg struct {
-	param       string
-	subPath     string
-	subTypename string
+	param         string
+	argImportPath string
+	argTypeName   string
 }
 
 // An arg looks like
@@ -104,7 +124,7 @@ func parseSubstitutionArg(s string) (*SubstitutionArg, error) {
 	if i < 0 {
 		return nil, fmt.Errorf("%q must be path.type", sub)
 	}
-	sa.subPath, sa.subTypename = sub[:i], sub[i+1:]
+	sa.argImportPath, sa.argTypeName = sub[:i], sub[i+1:]
 	return sa, nil
 }
 
@@ -113,7 +133,7 @@ type Binding struct {
 	arg   *types.TypeName
 }
 
-func argToBinding(arg *SubstitutionArg, gpkg *Package) (*Binding, error) {
+func argToBinding(arg *SubstitutionArg, gpkg *Package, imp types.Importer) (*Binding, error) {
 	gobj := gpkg.tpkg.Scope().Lookup(arg.param)
 	if gobj == nil {
 		return nil, fmt.Errorf("cannot find %s in package %s", arg.param, gpkg.tpkg.Name())
@@ -122,21 +142,17 @@ func argToBinding(arg *SubstitutionArg, gpkg *Package) (*Binding, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s is not a named type in package %s", arg.param, gpkg)
 	}
-	imp := importer.Default()
-	tpkg, err := imp.Import(arg.subPath)
+	tpkg, err := imp.Import(arg.argImportPath)
 	if err != nil {
-		tpkg, err = importer.For("source", nil).Import(arg.subPath)
-		if err != nil {
-			return nil, fmt.Errorf("source importer says: %v", err)
-		}
+		return nil, err
 	}
-	sobj := tpkg.Scope().Lookup(arg.subTypename)
+	sobj := tpkg.Scope().Lookup(arg.argTypeName)
 	if sobj == nil {
-		return nil, fmt.Errorf("cannot find %s in package %s", arg.subTypename, tpkg.Name())
+		return nil, fmt.Errorf("cannot find %s in package %s", arg.argTypeName, tpkg.Name())
 	}
 	stn, ok := sobj.(*types.TypeName)
 	if !ok {
-		return nil, fmt.Errorf("%s is not a named type in package %s", arg.subTypename, tpkg.Path())
+		return nil, fmt.Errorf("%s is not a named type in package %s", arg.argTypeName, tpkg.Path())
 	}
 	if err := checkBinding(gtn, stn); err != nil {
 		return nil, err
