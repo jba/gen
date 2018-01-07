@@ -44,11 +44,11 @@ func main() {
 	}
 	var bindings []*Binding
 	for _, arg := range flag.Args() {
-		sa, err := parseSubstitutionArg(arg)
+		bs, err := parseBindingSpec(arg)
 		if err != nil {
 			log.Fatal(err)
 		}
-		b, err := argToBinding(sa, gpkg, argImporter)
+		b, err := specToBinding(bs, gpkg, argImporter)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -105,7 +105,7 @@ func (c compiledThenSourceImporter) Import(path string) (*types.Package, error) 
 	return p, nil
 }
 
-type SubstitutionArg struct {
+type BindingSpec struct {
 	param         string
 	argImportPath string
 	argTypeName   string
@@ -113,57 +113,72 @@ type SubstitutionArg struct {
 
 // An arg looks like
 //    param:type
-func parseSubstitutionArg(s string) (*SubstitutionArg, error) {
+func parseBindingSpec(s string) (*BindingSpec, error) {
 	parts := strings.Split(s, ":")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("bad spec %q", s)
 	}
-	sa := &SubstitutionArg{param: parts[0]}
+	sa := &BindingSpec{param: parts[0]}
 	sub := parts[1]
 	i := strings.LastIndex(sub, ".")
 	if i < 0 {
-		return nil, fmt.Errorf("%q must be path.type", sub)
+		sa.argImportPath = ""
+		sa.argTypeName = sub
+	} else {
+		sa.argImportPath, sa.argTypeName = sub[:i], sub[i+1:]
 	}
-	sa.argImportPath, sa.argTypeName = sub[:i], sub[i+1:]
 	return sa, nil
 }
 
 type Binding struct {
 	param *types.TypeName
-	arg   *types.TypeName
+	arg   types.Type
 }
 
-func argToBinding(arg *SubstitutionArg, gpkg *Package, imp types.Importer) (*Binding, error) {
-	gobj := gpkg.tpkg.Scope().Lookup(arg.param)
+func specToBinding(spec *BindingSpec, gpkg *Package, imp types.Importer) (*Binding, error) {
+	gobj := gpkg.tpkg.Scope().Lookup(spec.param)
 	if gobj == nil {
-		return nil, fmt.Errorf("cannot find %s in package %s", arg.param, gpkg.tpkg.Name())
+		return nil, fmt.Errorf("cannot find %s in package %s", spec.param, gpkg.tpkg.Name())
 	}
 	gtn, ok := gobj.(*types.TypeName)
 	if !ok {
-		return nil, fmt.Errorf("%s is not a named type in package %s", arg.param, gpkg)
+		return nil, fmt.Errorf("%s is not a named type in package %s", spec.param, gpkg)
 	}
-	tpkg, err := imp.Import(arg.argImportPath)
-	if err != nil {
+	var atype types.Type
+	if spec.argImportPath == "" {
+		for _, bt := range types.Typ {
+			if spec.argTypeName == bt.Name() {
+				atype = bt
+				break
+			}
+		}
+		if atype == nil {
+			return nil, fmt.Errorf("no basic type %q", spec.argTypeName)
+		}
+	} else {
+		tpkg, err := imp.Import(spec.argImportPath)
+		if err != nil {
+			return nil, err
+		}
+		sobj := tpkg.Scope().Lookup(spec.argTypeName)
+		if sobj == nil {
+			return nil, fmt.Errorf("cannot find %s in package %s", spec.argTypeName, tpkg.Name())
+		}
+		stn, ok := sobj.(*types.TypeName)
+		if !ok {
+			return nil, fmt.Errorf("%s is not a named type in package %s", spec.argTypeName, tpkg.Path())
+		}
+		atype = stn.Type()
+	}
+	if err := checkBinding(gtn, atype); err != nil {
 		return nil, err
 	}
-	sobj := tpkg.Scope().Lookup(arg.argTypeName)
-	if sobj == nil {
-		return nil, fmt.Errorf("cannot find %s in package %s", arg.argTypeName, tpkg.Name())
-	}
-	stn, ok := sobj.(*types.TypeName)
-	if !ok {
-		return nil, fmt.Errorf("%s is not a named type in package %s", arg.argTypeName, tpkg.Path())
-	}
-	if err := checkBinding(gtn, stn); err != nil {
-		return nil, err
-	}
-	return &Binding{param: gtn, arg: stn}, nil
+	return &Binding{param: gtn, arg: atype}, nil
 }
 
 // Check that a binding is valid: that the arg can be substituted for the param.
-func checkBinding(param, arg *types.TypeName) error {
+func checkBinding(param *types.TypeName, atype types.Type) error {
 	ptype := param.Type()
-	atype := arg.Type()
 	switch putype := ptype.Underlying().(type) {
 	case *types.Interface:
 		iface := newSubInterface(putype, ptype, atype)
@@ -175,7 +190,7 @@ func checkBinding(param, arg *types.TypeName) error {
 			} else {
 				msg = "is missing"
 			}
-			return fmt.Errorf("%s.%s does not implement %s: method %s %s", arg.Pkg().Path(), arg.Name(), ptype,
+			return fmt.Errorf("%s does not implement %s: method %s %s", atype, ptype,
 				method.Name(), msg)
 		}
 		return nil
@@ -256,12 +271,15 @@ func substituteFile(filename string, bindings []*Binding, fset *token.FileSet, f
 			continue
 		}
 		typeSpec := paramPath[1].(*ast.TypeSpec)
-		addImport(file, b.arg.Pkg().Name(), b.arg.Pkg().Path())
+		if named, ok := b.arg.(*types.Named); ok {
+			tn := named.Obj()
+			addImport(file, tn.Pkg().Name(), tn.Pkg().Path())
+		}
 		// Turn the type spec into an alias if it isn't already.
 		if !typeSpec.Assign.IsValid() {
 			typeSpec.Assign = typeSpec.Type.Pos()
 		}
-		typeSpec.Type = exprForType(b.arg.Type())
+		typeSpec.Type = exprForType(b.arg)
 	}
 	return nil
 }
@@ -297,8 +315,10 @@ func exprForType(typ types.Type) ast.Expr {
 			X:   &ast.Ident{Name: typ.Obj().Pkg().Name()},
 			Sel: &ast.Ident{Name: typ.Obj().Name()},
 		}
+	case *types.Basic:
+		return &ast.Ident{Name: typ.Name()}
 	default:
-		return nil
+		panic(fmt.Sprintf("unknown type %T", typ))
 	}
 }
 
