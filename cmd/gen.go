@@ -1,18 +1,28 @@
 // TODO
 // - Support unnamed types, like []geo.Point or map[string]bool
-// - Eq interface for ==
+// - Fix bug with augmentedType, where by creating a new type with an Equals method, we
+//   lose all the methods of the original type. Maybe embed?
+//    test: go run gen.go -g github.com/jba/gen/examples/slices -o $HOME/go/src/github.com/jba/gen/output \
+//                 -p timeslices T:time.Time
+// - Eq interface for ==.
+//   Now, if we gen example/maps with a non-comparable type like regexp.Regexp, gen succeeds even
+//   though the resulting instantiation doesn't compile. Require Eq for map keys (as well as explicit uses of ==).
 // - CanNil interface for nil
 // - type assertions
+// - a generic package importing other generic packages
 
 package main
 
 import (
+	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"go/ast"
 	"go/format"
 	"go/importer"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"go/types"
 	"io/ioutil"
@@ -52,7 +62,8 @@ func main() {
 		}
 		b, err := specToBinding(bs, gpkg, argImporter)
 		if err != nil {
-			log.Fatal(err)
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
 		}
 		bindings = append(bindings, b)
 	}
@@ -197,6 +208,24 @@ func specToBinding(spec *BindingSpec, gpkg *Package, imp types.Importer) (*Bindi
 	if err := checkBinding(gtn, atype); err != nil {
 		return nil, err
 	}
+
+	exprs := eqExprs(gtn, gpkg)
+	has := hasEq(gtn.Type().Underlying().(*types.Interface))
+	if len(exprs) > 0 && !has {
+		var buf bytes.Buffer
+		fmt.Fprintf(&buf, "param %s does not include gen.Eq, but == is used or implied at:\n", gtn.Name())
+		for _, e := range exprs {
+			fmt.Fprintf(&buf, "  %s: ", gpkg.fset.Position(e.Pos()))
+			printer.Fprint(&buf, gpkg.fset, e)
+			fmt.Fprintln(&buf)
+		}
+
+		return nil, errors.New(buf.String())
+	}
+	if len(exprs) == 0 && has {
+		log.Printf("param %s includes gen.Eq, but does not need it", gtn.Name())
+	}
+
 	return &Binding{
 		param: gtn,
 		arg:   atype,
@@ -221,10 +250,14 @@ func checkBinding(param *types.TypeName, atype types.Type) error {
 			return fmt.Errorf("%s does not implement %s: method %s %s", atype, ptype,
 				method.Name(), msg)
 		}
+		if hasEq(ptype.Underlying().(*types.Interface)) && !types.Comparable(atype) {
+			return fmt.Errorf("%s is not comparable but %s requires it", atype, ptype)
+		}
 		return nil
 	default:
 		return fmt.Errorf("type of param %s must be interface, not %T\n", param.Name(), ptype)
 	}
+
 	return nil
 }
 
@@ -264,6 +297,8 @@ func augmentedType(t types.Type) types.Type {
 	for _, am := range augmentedMethods(t) {
 		methods = append(methods, types.NewFunc(token.NoPos, nil, am.name, sig))
 	}
+	// TODO: I don't think this works for non-basic comparable types. By defining a new type,
+	// we lose the method set of the original type.
 	return types.NewNamed(types.NewTypeName(token.NoPos, nil, "TYPENAME", t), t.Underlying(), methods)
 }
 
@@ -307,7 +342,10 @@ func loadPackage(path string) (*Package, error) {
 		Uses:  make(map[*ast.Ident]types.Object),
 		Types: make(map[ast.Expr]types.TypeAndValue),
 	}
-	conf := types.Config{Importer: importer.Default()}
+	conf := types.Config{Importer: compiledThenSourceImporter{
+		importer.Default(),
+		importer.For("source", nil),
+	}}
 	tpkg, err := conf.Check(path, fset, files, info)
 	if err != nil {
 		return nil, err
@@ -717,4 +755,52 @@ func replaceExpr(n ast.Node, f func(*ast.Expr) bool) {
 
 		// Ignore all other node types.
 	}
+}
+
+// Find every expression that assumes param has ==.
+func eqExprs(param *types.TypeName, pkg *Package) []ast.Expr {
+	var exprs []ast.Expr
+	ptype := param.Type()
+	typeOf := func(e ast.Expr) types.Type {
+		return pkg.info.Types[e].Type
+	}
+
+	// TODO: making a map[T]X, even if it's never indexed?
+	for _, file := range pkg.apkg.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.BinaryExpr:
+				if (n.Op == token.EQL || n.Op == token.NEQ) &&
+					(types.Identical(typeOf(n.X), ptype) || types.Identical(typeOf(n.Y), ptype)) {
+					exprs = append(exprs, n)
+					return false
+				}
+				return true // children of this binary expression might still match
+
+			case *ast.IndexExpr:
+				if _, ok := typeOf(n.X).(*types.Map); ok && types.Identical(typeOf(n.Index), ptype) {
+					exprs = append(exprs, n)
+					return false
+				}
+				return true
+			}
+			return true
+		})
+	}
+	return exprs
+}
+
+const eqImportPath = "github.com/jba/gen"
+
+func hasEq(iface *types.Interface) bool {
+	for i := 0; i < iface.NumEmbeddeds(); i++ {
+		tn := iface.Embedded(i).Obj()
+		if tn.Name() == "Eq" && tn.Pkg().Path() == eqImportPath {
+			return true
+		}
+		if hasEq(iface.Embedded(i).Underlying().(*types.Interface)) {
+			return true
+		}
+	}
+	return false
 }

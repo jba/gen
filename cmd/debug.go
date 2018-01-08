@@ -19,3 +19,15 @@ func dumpTypeSpec(ts *ast.TypeSpec, info *types.Info) {
 		fmt.Printf("unknown underlying type: %T\n", ut)
 	}
 }
+
+func dumpInterface(name string, iface *types.Interface) {
+	fmt.Printf("interface %s:\n", name)
+	fmt.Println("explicit")
+	for i := 0; i < iface.NumExplicitMethods(); i++ {
+		fmt.Printf("  %s\n", iface.ExplicitMethod(i))
+	}
+	fmt.Println("embedded")
+	for i := 0; i < iface.NumEmbeddeds(); i++ {
+		dumpInterface(iface.Embedded(i).String(), iface.Embedded(i).Underlying().(*types.Interface))
+	}
+}
