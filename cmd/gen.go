@@ -1,15 +1,24 @@
 // TODO
 // - Support unnamed types, like []geo.Point or map[string]bool
+//   When we do this, see if we have to check ourselves that K is comparable in map[K]V, or if go/types
+//   will report an error for us.
 // - Fix bug with augmentedType, where by creating a new type with an Equals method, we
 //   lose all the methods of the original type. Maybe embed?
 //    test: go run gen.go -g github.com/jba/gen/examples/slices -o $HOME/go/src/github.com/jba/gen/output \
 //                 -p timeslices T:time.Time
-// - Eq interface for ==.
-//   Now, if we gen example/maps with a non-comparable type like regexp.Regexp, gen succeeds even
-//   though the resulting instantiation doesn't compile. Require Eq for map keys (as well as explicit uses of ==).
-// - CanNil interface for nil
+// - gen.Nillable interface for nil
 // - type assertions
-// - a generic package importing other generic packages
+// - a generic package importing other generic packages (ones with interface definitions)
+// - When a generic param has the Comparable constraint, allow instantiations of interface types.
+//   That mirrors the compiler, which allows interface types in == and map indexing and defers the comparable
+//   check to runtime.
+
+// examples (for readme):
+// - container/ring
+// - google/btree
+// - pubsub/pullstream
+// - lru.Cache?
+// - sync.Map?
 
 package main
 
@@ -404,6 +413,7 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, in
 	return replaceCode(file, rewrites, info)
 }
 
+// TODO: use astutil.AddImport
 func addImport(file *ast.File, name, path string) {
 	if len(file.Decls) == 0 {
 		file.Decls = []ast.Decl{&ast.GenDecl{Tok: token.IMPORT}}
@@ -765,24 +775,30 @@ func eqExprs(param *types.TypeName, pkg *Package) []ast.Expr {
 		return pkg.info.Types[e].Type
 	}
 
-	// TODO: making a map[T]X, even if it's never indexed?
+	// TODO: check that K is comparable modulo ptype for every map[K]V type expression in the package.
+	// TODO: we have to do more than check for identity with ptype. We have to consider types
+	// that contain ptype, like [1]T, struct{x T}, etc.
 	for _, file := range pkg.apkg.Files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.BinaryExpr:
 				if (n.Op == token.EQL || n.Op == token.NEQ) &&
-					(types.Identical(typeOf(n.X), ptype) || types.Identical(typeOf(n.Y), ptype)) {
+					(!comparableMod(typeOf(n.X), ptype) || !comparableMod(typeOf(n.Y), ptype)) {
 					exprs = append(exprs, n)
 					return false
 				}
 				return true // children of this binary expression might still match
 
 			case *ast.IndexExpr:
-				if _, ok := typeOf(n.X).(*types.Map); ok && types.Identical(typeOf(n.Index), ptype) {
+				if _, ok := typeOf(n.X).(*types.Map); ok && !comparableMod(typeOf(n.Index), ptype) {
 					exprs = append(exprs, n)
 					return false
 				}
 				return true
+
+			case *ast.MapType:
+				fmt.Printf("################ does this work? %v\n", n)
+
 			}
 			return true
 		})
@@ -801,6 +817,32 @@ func hasEq(iface *types.Interface) bool {
 		if hasEq(iface.Embedded(i).Underlying().(*types.Interface)) {
 			return true
 		}
+	}
+	return false
+}
+
+// Reports whether t is comparable, assuming the assumeNot arg is not comparable.
+func comparableMod(t types.Type, assumeNot types.Type) bool {
+	if types.Identical(t, assumeNot) {
+		return false
+	}
+	// Code from https://golang.org/src/go/types/predicates.go.
+	switch t := t.Underlying().(type) {
+	case *types.Basic:
+		// assume invalid types to be comparable
+		// to avoid follow-up errors
+		return t.Kind() != UntypedNil
+	case *types.Pointer, *types.Interface, *types.Chan:
+		return true
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if !comparable(t.Field(i).Type(), assumeNot) {
+				return false
+			}
+		}
+		return true
+	case *Array:
+		return comparable(t.Elem(), assumeNot)
 	}
 	return false
 }
