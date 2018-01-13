@@ -1,7 +1,7 @@
 package gen
 
-// eq means supports ==
-type Eq interface{}
+// Comparable means supports ==
+type Comparable interface{}
 
-// CanNil means it can take on a nil value.
-type CanNil interface{}
+// Nillable means it can take on a nil value.
+type Nillable interface{}

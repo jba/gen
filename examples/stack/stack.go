@@ -1,7 +1,6 @@
 package stack
 
-// go:gen
-type T = interface{}
+type T interface{}
 
 type Stack struct {
 	items []T

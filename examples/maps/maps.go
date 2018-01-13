@@ -4,7 +4,7 @@ import "github.com/jba/gen"
 
 type (
 	K interface {
-		gen.Eq
+		gen.Comparable
 	}
 	V interface{}
 )
@@ -18,6 +18,17 @@ func Clone(m map[K]V) map[K]V {
 		r[k] = v
 	}
 	return r
+}
+
+func Keys(m map[K]V) []K {
+	if m == nil {
+		return nil
+	}
+	ks := make([]K, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
 }
 
 func Union(dest, src map[K]V) map[K]V {
