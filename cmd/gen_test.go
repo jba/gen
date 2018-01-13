@@ -6,12 +6,16 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io/ioutil"
+	"log"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
 func TestExamples(t *testing.T) {
+	log.SetOutput(ioutil.Discard)
 	for _, test := range []struct {
 		dir    string
 		outPkg string
@@ -38,6 +42,44 @@ func TestExamples(t *testing.T) {
 				t.Error(string(out))
 			}
 		})
+	}
+}
+
+func TestCheckParamErrors(t *testing.T) {
+	// Test the additional checks we perform on generic parameter types. The go/types checker
+	// handles the usual interface implementation checks.
+	for _, test := range []struct {
+		wantVal interface{}
+		code    string
+	}{
+		{notInterfaceError(""), "type T int"},
+		{needsComparableError(""), "type T interface{}; var m map[T]bool"},
+		{needsComparableError(""), `
+			type T interface{};
+			func m() bool {
+				var t1, t2 T
+				return t1 == t2
+			}`},
+		{needsComparableError(""), `
+			import "fmt"
+			type T interface{}
+			func m() {	var m map[interface{}]bool
+				var t T
+				fmt.Println(m[t])
+			}`},
+	} {
+		pkg := packageFromSource("package p; " + test.code)
+		gtn, err := pkg.topLevelTypeName("T")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := checkParam(gtn, pkg); err == nil {
+			t.Error("wanted error, got nil")
+		} else if got, want := reflect.TypeOf(err), reflect.TypeOf(test.wantVal); got != want {
+			t.Errorf("got error type %s, want %s", got, want)
+		} else {
+			t.Log(err)
+		}
 	}
 }
 
@@ -109,4 +151,41 @@ func newNamedType(name string, t types.Type) types.Type {
 		panic("misconstructed name type")
 	}
 	return nt
+}
+
+func packageFromSource(src string) *Package {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "<src>", src, 0)
+	if err != nil {
+		panic(err)
+	}
+	apkg := &ast.Package{
+		Name:  file.Name.Name,
+		Files: map[string]*ast.File{"<src>": file},
+	}
+	pkg, err := makePackage(fset, "<path>", apkg)
+	if err != nil {
+		panic(err)
+	}
+	return pkg
+}
+
+func loadPackageFromFile(ipath, filename string) (*Package, error) {
+	fset := token.NewFileSet()
+	apkg, err := astPkgFromFile(fset, filename)
+	if err != nil {
+		return nil, err
+	}
+	return makePackage(fset, ipath, apkg)
+}
+
+func astPkgFromFile(fset *token.FileSet, filename string) (*ast.Package, error) {
+	file, err := parser.ParseFile(fset, filename, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	return &ast.Package{
+		Name:  file.Name.Name,
+		Files: map[string]*ast.File{filename: file},
+	}, nil
 }
