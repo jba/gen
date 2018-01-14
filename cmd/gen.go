@@ -244,6 +244,10 @@ type needsComparableError string
 
 func (e needsComparableError) Error() string { return string(e) }
 
+type needsNillableError string
+
+func (e needsNillableError) Error() string { return string(e) }
+
 type notInterfaceError string
 
 func (e notInterfaceError) Error() string { return string(e) }
@@ -253,15 +257,27 @@ func checkParam(gtn *types.TypeName, gpkg *Package) error {
 	if !ok {
 		return notInterfaceError(fmt.Sprintf("type must be interface, not %T\n", gtn.Type()))
 	}
-	expr := comparableExpr(gtn.Type(), gpkg)
-	has := implementsSpecialInterface(putype, "Comparable")
-	if expr != nil && !has {
-		return needsComparableError(fmt.Sprintf("param %s does not implement gen.Comparable, but it is required at %s", gtn.Name(), gpkg.fset.Position(expr.Pos())))
+
+	if msg := checkSpecialInterface("Comparable", gtn, putype, gpkg, comparableNode); msg != "" {
+		return needsComparableError(msg)
 	}
-	if expr == nil && has {
-		log.Printf("param %s includes gen.Comparable, but does not need it", gtn.Name())
+	if msg := checkSpecialInterface("Nillable", gtn, putype, gpkg, nillableNode); msg != "" {
+		return needsNillableError(msg)
 	}
 	return nil
+}
+
+func checkSpecialInterface(name string, gtn *types.TypeName, iface *types.Interface, gpkg *Package, finder func(types.Type, *Package) ast.Node) string {
+	node := finder(gtn.Type(), gpkg)
+	has := implementsSpecialInterface(iface, name)
+	if node != nil && !has {
+		return fmt.Sprintf("param %s does not implement gen.%s, but it is required at %s",
+			gtn.Name(), name, gpkg.fset.Position(node.Pos()))
+	}
+	if node == nil && has {
+		log.Printf("param %s includes gen.%s, but does not need it", gtn.Name(), name)
+	}
+	return ""
 }
 
 // Check that a binding is valid: that the arg can be substituted for the param.
@@ -283,6 +299,7 @@ func checkBinding(ptype, atype types.Type) error {
 	if implementsSpecialInterface(putype, "Comparable") && !types.Comparable(atype) {
 		return fmt.Errorf("%s is not comparable but %s requires it", atype, ptype)
 	}
+	// TODO: check Nillable
 	return nil
 }
 
@@ -366,7 +383,7 @@ func loadPackage(ipath string) (*Package, error) {
 	}
 	dir := bpkg.Dir
 	fset := token.NewFileSet()
-	apkg, err := astPkgFromDir(fset, dir)
+	apkg, err := astPackageFromDir(fset, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +408,7 @@ func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package
 	}, nil
 }
 
-func astPkgFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
+func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
 	pkgs, err := parser.ParseDir(fset, dir, nil, 0)
 	if err != nil {
 		return nil, err
@@ -819,9 +836,9 @@ func replaceExpr(n ast.Node, f func(*ast.Expr) bool) {
 	}
 }
 
-// If t needs to implement Comparable in pkg, return an ast.Expr that proves it.
+// If t needs to implement Comparable in pkg, return a node that proves it.
 // Else return nil.
-func comparableExpr(t types.Type, pkg *Package) ast.Expr {
+func comparableNode(t types.Type, pkg *Package) ast.Node {
 	typeOf := func(e ast.Expr) types.Type {
 		return pkg.info.Types[e].Type
 	}
@@ -830,7 +847,7 @@ func comparableExpr(t types.Type, pkg *Package) ast.Expr {
 		return ok && b.Kind() == types.UntypedNil
 	}
 
-	var result ast.Expr
+	var result ast.Node
 	for _, file := range pkg.apkg.Files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch n := n.(type) {
@@ -858,6 +875,46 @@ func comparableExpr(t types.Type, pkg *Package) ast.Expr {
 					result = n
 					return false
 				}
+			}
+			return true
+		})
+	}
+	return result
+}
+
+// If t needs to implement Nillable in pkg, return a node that proves it.
+// Else return nil.
+func nillableNode(t types.Type, pkg *Package) ast.Node {
+	typeOf := func(e ast.Expr) types.Type {
+		return pkg.info.Types[e].Type
+	}
+	isNil := func(t types.Type) bool {
+		b, ok := t.(*types.Basic)
+		return ok && b.Kind() == types.UntypedNil
+	}
+
+	var result ast.Node
+	for _, file := range pkg.apkg.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.BinaryExpr:
+				tx := typeOf(n.X)
+				ty := typeOf(n.Y)
+				if (n.Op == token.EQL || n.Op == token.NEQ) &&
+					((isNil(tx) && types.Identical(ty, t)) || (isNil(ty) && types.Identical(tx, t))) {
+					result = n
+					return false
+				}
+				return true // children of this binary expression might still match
+
+			case *ast.AssignStmt:
+				for i := 0; i < len(n.Lhs); i++ {
+					if types.Identical(typeOf(n.Lhs[i]), t) && isNil(typeOf(n.Rhs[i])) {
+						result = n
+						return false
+					}
+				}
+				return true
 			}
 			return true
 		})

@@ -54,11 +54,19 @@ func TestCheckParamErrors(t *testing.T) {
 	}{
 		{notInterfaceError(""), "type T int"},
 		{needsComparableError(""), "type T interface{}; var m map[T]bool"},
+		{needsComparableError(""), "type T interface{}; var m map[[1]T]bool"},
+		{needsComparableError(""), "type T interface{}; type S struct { x T }; var m map[S]bool"},
 		{needsComparableError(""), `
 			type T interface{};
 			func m() bool {
 				var t1, t2 T
 				return t1 == t2
+			}`},
+		{needsComparableError(""), `
+			type T interface{};
+			func m() bool {
+				var t1, t2 T
+				return (t1 == t2) != (1 == 2)
 			}`},
 		{needsComparableError(""), `
 			import "fmt"
@@ -67,6 +75,12 @@ func TestCheckParamErrors(t *testing.T) {
 				var t T
 				fmt.Println(m[t])
 			}`},
+		{needsNillableError(""), "type T interface{}; func m(T) { m(nil) }"},
+		{needsNillableError(""), "type T interface{}; func m() T { return nil }"},
+		{needsNillableError(""), "type T interface{}; func m(t T) bool { return t == nil  }"},
+		{needsNillableError(""), "type T interface{}; func m()  { var t T = nil; _ = t }"},
+		{needsNillableError(""), "type T interface{}; func m(t T)  { x := (nil == t); _ = x }"},
+		{needsNillableError(""), "type T interface{}; type U T; func m()  { var u U = nil; _ = u }"},
 	} {
 		pkg := packageFromSource("package p; " + test.code)
 		gtn, err := pkg.topLevelTypeName("T")
@@ -74,11 +88,9 @@ func TestCheckParamErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := checkParam(gtn, pkg); err == nil {
-			t.Error("wanted error, got nil")
+			t.Errorf("%s: wanted error, got nil", test.code)
 		} else if got, want := reflect.TypeOf(err), reflect.TypeOf(test.wantVal); got != want {
 			t.Errorf("got error type %s, want %s", got, want)
-		} else {
-			t.Log(err)
 		}
 	}
 }
@@ -155,13 +167,9 @@ func newNamedType(name string, t types.Type) types.Type {
 
 func packageFromSource(src string) *Package {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "<src>", src, 0)
+	apkg, err := astPackage(fset, "<src>", src)
 	if err != nil {
 		panic(err)
-	}
-	apkg := &ast.Package{
-		Name:  file.Name.Name,
-		Files: map[string]*ast.File{"<src>": file},
 	}
 	pkg, err := makePackage(fset, "<path>", apkg)
 	if err != nil {
@@ -170,17 +178,17 @@ func packageFromSource(src string) *Package {
 	return pkg
 }
 
-func loadPackageFromFile(ipath, filename string) (*Package, error) {
-	fset := token.NewFileSet()
-	apkg, err := astPkgFromFile(fset, filename)
-	if err != nil {
-		return nil, err
-	}
-	return makePackage(fset, ipath, apkg)
-}
+// func loadPackageFromFile(ipath, filename string) (*Package, error) {
+// 	fset := token.NewFileSet()
+// 	apkg, err := astPackage(fset, filename, nil)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return makePackage(fset, ipath, apkg)
+// }
 
-func astPkgFromFile(fset *token.FileSet, filename string) (*ast.Package, error) {
-	file, err := parser.ParseFile(fset, filename, nil, 0)
+func astPackage(fset *token.FileSet, filename string, src interface{}) (*ast.Package, error) {
+	file, err := parser.ParseFile(fset, filename, src, 0)
 	if err != nil {
 		return nil, err
 	}
