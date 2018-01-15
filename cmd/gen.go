@@ -395,7 +395,10 @@ func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package
 	for _, file := range apkg.Files {
 		files = append(files, file)
 	}
-	info := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue)}
+	info := &types.Info{
+		Defs:  make(map[*ast.Ident]types.Object),
+		Types: make(map[ast.Expr]types.TypeAndValue),
+	}
 	tpkg, err := typecheck(ipath, fset, files, info)
 	if err != nil {
 		return nil, err
@@ -842,85 +845,169 @@ func comparableNode(t types.Type, pkg *Package) ast.Node {
 	typeOf := func(e ast.Expr) types.Type {
 		return pkg.info.Types[e].Type
 	}
-	isNil := func(t types.Type) bool {
-		b, ok := t.(*types.Basic)
-		return ok && b.Kind() == types.UntypedNil
-	}
-
 	var result ast.Node
 	for _, file := range pkg.apkg.Files {
 		ast.Inspect(file, func(n ast.Node) bool {
-			switch n := n.(type) {
-			case *ast.BinaryExpr:
-				tx := typeOf(n.X)
-				ty := typeOf(n.Y)
-				// Consider only == and != where neither operand is nil.
-				if (n.Op == token.EQL || n.Op == token.NEQ) &&
-					!isNil(tx) && !isNil(ty) &&
-					(!comparableMod(tx, t) || !comparableMod(ty, t)) {
-					result = n
-					return false
-				}
-				return true // children of this binary expression might still match
-
-			case *ast.IndexExpr:
-				if _, ok := typeOf(n.X).(*types.Map); ok && !comparableMod(typeOf(n.Index), t) {
-					result = n
-					return false
-				}
-				return true
-
-			case *ast.MapType:
-				if !comparableMod(typeOf(n.Key), t) {
-					result = n
-					return false
-				}
+			if needsComparable(n, t, typeOf) {
+				result = n
+				return false
 			}
 			return true
 		})
+		if result != nil {
+			return result
+		}
 	}
-	return result
+	return nil
+}
+
+// needsComparable reports whether n implies that t must be comparable.
+func needsComparable(n ast.Node, t types.Type, typeOf func(ast.Expr) types.Type) bool {
+	switch n := n.(type) {
+	case *ast.BinaryExpr:
+		if !(n.Op == token.EQL || n.Op == token.NEQ) {
+			return false
+		}
+
+		tx := typeOf(n.X)
+		ty := typeOf(n.Y)
+		// Consider only == and != where neither operand is nil.
+		return !isNil(tx) && !isNil(ty) && (!comparableMod(tx, t) || !comparableMod(ty, t))
+
+	case *ast.IndexExpr:
+		_, ok := typeOf(n.X).(*types.Map)
+		return ok && !comparableMod(typeOf(n.Index), t)
+
+	case *ast.MapType:
+		return !comparableMod(typeOf(n.Key), t)
+
+	case *ast.SwitchStmt:
+		// Comparable required only if there is some non-nil case expression.
+		if someCaseExpr(n, func(e ast.Expr) bool { return !isNil(typeOf(e)) }) {
+			return !comparableMod(typeOf(n.Tag), t)
+		}
+		return false
+
+	default:
+		return false
+	}
+}
+
+func someCaseExpr(n *ast.SwitchStmt, f func(ast.Expr) bool) bool {
+	for _, s := range n.Body.List {
+		if c, ok := s.(*ast.CaseClause); ok {
+			for _, e := range c.List {
+				if f(e) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func isNil(t types.Type) bool {
+	b, ok := t.(*types.Basic)
+	return ok && b.Kind() == types.UntypedNil
+}
+
+// needsNil reports whether node n implies that a generic parameter needs to be declared nillable.
+// match reports whether its argument type is the generic parameter type (or an equivalent type).
+// typeOf returns the type of an expression.
+// sig is the signature of the enclosing function, if any.
+func needsNillable(n ast.Node, match func(types.Type) bool, typeOf func(ast.Expr) types.Type, sig *types.Signature) bool {
+	switch n := n.(type) {
+	case *ast.BinaryExpr:
+		if !(n.Op == token.EQL || n.Op == token.NEQ) {
+			return false
+		}
+		tx := typeOf(n.X)
+		ty := typeOf(n.Y)
+		return (isNil(tx) && match(ty)) || (isNil(ty) && match(tx))
+
+	case *ast.AssignStmt:
+		for i := 0; i < len(n.Lhs); i++ {
+			if match(typeOf(n.Lhs[i])) && isNil(typeOf(n.Rhs[i])) {
+				return true
+			}
+		}
+
+	case *ast.ValueSpec:
+		if match(typeOf(n.Type)) {
+			for _, v := range n.Values {
+				if isNil(typeOf(v)) {
+					return true
+				}
+			}
+		}
+
+	case *ast.CallExpr:
+		sig := typeOf(n.Fun).(*types.Signature)
+		for i, arg := range n.Args {
+			if isNil(typeOf(arg)) && match(sig.Params().At(i).Type()) {
+				return true
+			}
+		}
+
+	case *ast.ReturnStmt:
+		for i, r := range n.Results {
+			if isNil(typeOf(r)) && match(sig.Results().At(i).Type()) {
+				return true
+			}
+		}
+
+	case *ast.SendStmt:
+		return isNil(typeOf(n.Value)) && match(typeOf(n.Chan).(*types.Chan).Elem())
+
+	case *ast.SwitchStmt:
+		return match(typeOf(n.Tag)) && someCaseExpr(n, func(e ast.Expr) bool { return isNil(typeOf(e)) })
+	}
+	return false
 }
 
 // If t needs to implement Nillable in pkg, return a node that proves it.
 // Else return nil.
 func nillableNode(t types.Type, pkg *Package) ast.Node {
+	match := func(x types.Type) bool { return types.Identical(x, t) }
 	typeOf := func(e ast.Expr) types.Type {
 		return pkg.info.Types[e].Type
 	}
-	isNil := func(t types.Type) bool {
-		b, ok := t.(*types.Basic)
-		return ok && b.Kind() == types.UntypedNil
-	}
-
 	var result ast.Node
-	for _, file := range pkg.apkg.Files {
-		ast.Inspect(file, func(n ast.Node) bool {
-			switch n := n.(type) {
-			case *ast.BinaryExpr:
-				tx := typeOf(n.X)
-				ty := typeOf(n.Y)
-				if (n.Op == token.EQL || n.Op == token.NEQ) &&
-					((isNil(tx) && types.Identical(ty, t)) || (isNil(ty) && types.Identical(tx, t))) {
-					result = n
-					return false
-				}
-				return true // children of this binary expression might still match
 
-			case *ast.AssignStmt:
-				for i := 0; i < len(n.Lhs); i++ {
-					if types.Identical(typeOf(n.Lhs[i]), t) && isNil(typeOf(n.Rhs[i])) {
-						result = n
-						return false
-					}
+	var withSig func(sig *types.Signature) visitorFunc
+	withSig = func(sig *types.Signature) visitorFunc {
+		var vf visitorFunc
+		vf = func(n ast.Node) ast.Visitor {
+			switch n := n.(type) {
+			case *ast.FuncDecl:
+				return withSig(pkg.info.Defs[n.Name].Type().(*types.Signature))
+
+			case *ast.FuncLit:
+				return withSig(typeOf(n.Type).(*types.Signature))
+
+			default:
+				if needsNillable(n, match, typeOf, sig) {
+					result = n
+					return nil
 				}
-				return true
 			}
-			return true
-		})
+			return vf
+		}
+		return vf
 	}
-	return result
+
+	for _, file := range pkg.apkg.Files {
+		ast.Walk(withSig(nil), file)
+		if result != nil {
+			return result
+		}
+	}
+	return nil
 }
+
+type visitorFunc func(ast.Node) ast.Visitor
+
+func (v visitorFunc) Visit(n ast.Node) ast.Visitor { return v(n) }
 
 const genImportPath = "github.com/jba/gen"
 
@@ -1013,5 +1100,4 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 	default:
 		return nil, fmt.Errorf("unknown type expr %T", e)
 	}
-
 }

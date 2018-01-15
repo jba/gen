@@ -1,3 +1,14 @@
+// TODO:
+/*
+checkBinding: make sure we handle embedded iface:
+type Equaler interface { Equal(T) bool }
+
+type T interface{
+	Equaler
+	Less(T) bool
+}
+*/
+
 package main
 
 import (
@@ -11,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -53,36 +65,41 @@ func TestCheckParamErrors(t *testing.T) {
 		code    string
 	}{
 		{notInterfaceError(""), "type T int"},
-		{needsComparableError(""), "type T interface{}; var m map[T]bool"},
-		{needsComparableError(""), "type T interface{}; var m map[[1]T]bool"},
-		{needsComparableError(""), "type T interface{}; type S struct { x T }; var m map[S]bool"},
+		{needsComparableError(""), "var m map[T]bool"},
+		{needsComparableError(""), "var m map[[1]T]bool"},
+		{needsComparableError(""), "type S struct { x T }; var m map[S]bool"},
+		{needsComparableError(""), "func m() bool { var t1, t2 T;return t1 == t2 }"},
 		{needsComparableError(""), `
-			type T interface{};
-			func m() bool {
-				var t1, t2 T
-				return t1 == t2
-			}`},
-		{needsComparableError(""), `
-			type T interface{};
 			func m() bool {
 				var t1, t2 T
 				return (t1 == t2) != (1 == 2)
 			}`},
 		{needsComparableError(""), `
-			import "fmt"
-			type T interface{}
-			func m() {	var m map[interface{}]bool
+			func m() {
+                var m map[interface{}]bool
 				var t T
-				fmt.Println(m[t])
+				_ = m[t]
 			}`},
-		{needsNillableError(""), "type T interface{}; func m(T) { m(nil) }"},
-		{needsNillableError(""), "type T interface{}; func m() T { return nil }"},
-		{needsNillableError(""), "type T interface{}; func m(t T) bool { return t == nil  }"},
-		{needsNillableError(""), "type T interface{}; func m()  { var t T = nil; _ = t }"},
-		{needsNillableError(""), "type T interface{}; func m(t T)  { x := (nil == t); _ = x }"},
-		{needsNillableError(""), "type T interface{}; type U T; func m()  { var u U = nil; _ = u }"},
+		{needsComparableError(""), "func m(t, u T) { switch t {case u:}}"},
+		{needsNillableError(""), "func m(T) { m(nil) }"},
+		{needsNillableError(""), "func m() T { return nil }"},
+		{needsNillableError(""), "func m(t T) bool { return t == nil  }"},
+		{needsNillableError(""), "func m()  { var t T; t = nil; _ = t }"},
+		{needsNillableError(""), "func m()  { var t T = nil; _ = t }"},
+		{needsNillableError(""), "func m(t T)  { x := (nil == t); _ = x }"},
+		{needsNillableError(""), "func m(t1, t2 T) bool { return (1 == 2) != (t1 == nil) }"},
+		// TODO: handle "type U T"
+		//{needsNillableError(""), "type U T; func m()  { var u U = nil; _ = u }"},
+		{needsNillableError(""), "func m(t, u T) { switch t {case nil:}}"},
+		{needsNillableError(""), "func m() { c := make(chan T); c <- nil }"},
+		{needsNillableError(""), "func m() { func(t T) {}(nil) }"},
 	} {
-		pkg := packageFromSource("package p; " + test.code)
+		code := test.code
+		if !strings.HasPrefix(code, "type T") {
+			code = "type T interface{}; " + code
+		}
+		code = "package p; " + code
+		pkg := packageFromSource(code)
 		gtn, err := pkg.topLevelTypeName("T")
 		if err != nil {
 			t.Fatal(err)
@@ -90,7 +107,7 @@ func TestCheckParamErrors(t *testing.T) {
 		if err := checkParam(gtn, pkg); err == nil {
 			t.Errorf("%s: wanted error, got nil", test.code)
 		} else if got, want := reflect.TypeOf(err), reflect.TypeOf(test.wantVal); got != want {
-			t.Errorf("got error type %s, want %s", got, want)
+			t.Errorf("%s: got error type %s, want %s", test.code, got, want)
 		}
 	}
 }
