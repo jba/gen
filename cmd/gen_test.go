@@ -51,6 +51,7 @@ func TestComparableMod(t *testing.T) {
 
 func TestBuildType(t *testing.T) {
 	intType := types.Typ[types.Int]
+	boolType := types.Typ[types.Bool]
 	lookup := func(path, name string) types.Type {
 		typ, err := lookupNamedType(path, name)
 		if err != nil {
@@ -70,10 +71,13 @@ func TestBuildType(t *testing.T) {
 		{"int", intType},
 		{"[]int", types.NewSlice(intType)},
 		{"[5]int", types.NewArray(intType, 5)},
-		{"map[int]bool", types.NewMap(intType, types.Typ[types.Bool])},
+		{"map[int]bool", types.NewMap(intType, boolType)},
 		{"time.Time", lookup("time", "Time")},
 		{"map[time.Time][]int", types.NewMap(lookup("time", "Time"), types.NewSlice(intType))},
 		{`"github.com/jba/gen/examples/geo".Point`, lookup("github.com/jba/gen/examples/geo", "Point")},
+		{"map[[]int]bool", types.NewMap(types.NewSlice(intType), boolType)}, // no error on non-comparable key
+		{"struct{x int}", types.NewStruct([]*types.Var{types.NewField(token.NoPos, nil, "x", intType, false)}, nil)},
+		{"map[int]struct{}", types.NewMap(intType, types.NewStruct(nil, nil))},
 	} {
 		got, err := buildType(test.in)
 		if err != nil && test.want != nil {
@@ -148,7 +152,7 @@ func TestCheckBinding(t *testing.T) {
 		atypeExpr string
 	}{
 		{nil, "type T interface{}", "int"},
-		//		{nil, "type T interface{}", "time.Time"},
+		{nil, "type T interface{}", "time.Time"},
 		{nil, "type T interface { Equal(T) bool }", "int"}, // by augmentation
 		{nil, "type T interface { gen.Comparable }", "int"},
 		{missingMethodError(""), "type T interface { M() }", "int"},

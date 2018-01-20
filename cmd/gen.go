@@ -1,13 +1,7 @@
 // TODO
-// - Support unnamed types for instantiation, like []geo.Point or map[string]bool
-//   When we do this, see if we have to check ourselves that K is comparable in map[K]V, or if go/types
-//   will report an error for us.
-// - Fix bug with augmentedType, where by creating a new type with an Equals method, we
-//   lose all the methods of the original type. Maybe embed?
-//    test: go run gen.go -g github.com/jba/gen/examples/slices -o $HOME/go/src/github.com/jba/gen/output \
-//                 -p timeslices T:time.Time
-// - gen.Nillable interface for nil
-// - type assertions
+// - rewrite
+// - make sure we cause an error when argtype is map[<non-comparable]X
+// - rewrite type assertions and switches
 // - a generic package importing other generic packages (ones with interface definitions)
 // - When a generic param has the Comparable constraint, allow instantiations of interface types.
 //   That mirrors the compiler, which allows interface types in == and map indexing and defers the comparable
@@ -21,7 +15,7 @@
 
 // examples (for readme):
 // - container/ring
-// - google/btree
+// - jba/btree
 // - pubsub/pullstream
 // - lru.Cache?
 // - sync.Map?
@@ -1141,6 +1135,19 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 			}
 			return types.NewArray(elType, length), nil
 		}
+
+	case *ast.StructType:
+		var fields []*types.Var
+		for _, f := range e.Fields.List {
+			ft, err := exprToType(f.Type)
+			if err != nil {
+				return nil, err
+			}
+			for _, n := range f.Names {
+				fields = append(fields, types.NewField(token.NoPos, nil, n.Name, ft, false))
+			}
+		}
+		return types.NewStruct(fields, nil), nil
 
 	default:
 		return nil, fmt.Errorf("unknown type expr %T", e)
