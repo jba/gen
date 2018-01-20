@@ -1,5 +1,5 @@
 // TODO
-// - Support unnamed types, like []geo.Point or map[string]bool
+// - Support unnamed types for instantiation, like []geo.Point or map[string]bool
 //   When we do this, see if we have to check ourselves that K is comparable in map[K]V, or if go/types
 //   will report an error for us.
 // - Fix bug with augmentedType, where by creating a new type with an Equals method, we
@@ -231,7 +231,7 @@ func specToBinding(spec *BindingSpec, gpkg *Package) (*Binding, error) {
 		atype = stn.Type()
 	}
 	if err := checkBinding(gtn.Type(), atype); err != nil {
-		return nil, fmt.Errorf("%s: %v", gpkg.fset.Position(gtn.Pos()), gtn.Name(), err)
+		return nil, fmt.Errorf("%s: %v", gpkg.fset.Position(gtn.Pos()), err)
 	}
 
 	return &Binding{
@@ -299,6 +299,7 @@ func checkBinding(ptype, atype types.Type) error {
 	if implementsSpecialInterface(putype, "Comparable") && !types.Comparable(atype) {
 		return fmt.Errorf("%s is not comparable but %s requires it", atype, ptype)
 	}
+	if implementsSpecialInterface(putype, "Nillable") &&
 	// TODO: check Nillable
 	return nil
 }
@@ -911,7 +912,7 @@ func isNil(t types.Type) bool {
 	return ok && b.Kind() == types.UntypedNil
 }
 
-// needsNil reports whether node n implies that a generic parameter needs to be declared nillable.
+// needsNillable reports whether node n implies that a generic parameter needs to be declared nillable.
 // match reports whether its argument type is the generic parameter type (or an equivalent type).
 // typeOf returns the type of an expression.
 // sig is the signature of the enclosing function, if any.
