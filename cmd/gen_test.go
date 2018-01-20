@@ -12,9 +12,11 @@ type T interface{
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"go/types"
 	"io/ioutil"
@@ -159,21 +161,112 @@ func TestCheckBinding(t *testing.T) {
 	} {
 		code := `package p; import "github.com/jba/gen";` + test.ptypeDecl
 		pkg := packageFromSource(code)
-		gtn, err := pkg.topLevelTypeName("T")
-		if err != nil {
-			t.Fatal(err)
-		}
+		ptype := topLevelType("T", pkg)
 		atype, err := buildType(test.atypeExpr)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = checkBinding(gtn.Type(), atype)
+		err = checkBinding(ptype, atype)
 		if test.wantVal == nil && err != nil {
 			t.Errorf(`%s, %s: wanted nil, got "%v" (%T)`, test.ptypeDecl, test.atypeExpr, err, err)
 		} else if got, want := reflect.TypeOf(err), reflect.TypeOf(test.wantVal); got != want {
 			t.Errorf("%s, %s: got error type %s, want %s", test.ptypeDecl, test.atypeExpr, got, want)
 		}
 	}
+}
+
+func topLevelType(name string, pkg *Package) types.Type {
+	tn, err := pkg.topLevelTypeName(name)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return tn.Type()
+}
+
+func TestReplaceCode(t *testing.T) {
+	code := `
+	package p
+	type T interface {
+		Equal(T) bool
+		Less(T) bool
+		Greater(T) bool
+		GreaterEqual(T) bool
+		LessEqual(T) bool
+	}
+	func f(x, y T) bool {
+		if x.Equal(y) {
+			return x.Greater(y)
+		}
+		for x.GreaterEqual(y) {
+			switch {
+			case x.LessEqual(y): return true
+			default: return x.Less(y)
+			}
+		}
+		return false
+	}
+	func g(x T) {
+		m1 := x.Less
+		m2 := T.Greater
+		_, _ = m1, m2
+	}
+`
+
+	wantf := `func f(x, y T) bool {
+	if x == y {
+		return x > y
+	}
+	for x >= y {
+		switch {
+		case x <= y:
+			return true
+		default:
+			return x < y
+		}
+	}
+	return false
+}`
+
+	wantg := `func g(x T) {
+	m1 := func(a T) func(T) bool {
+		return func(b T) bool {
+			return a < b
+		}
+	}(x)
+	m2 := func(a, b T) bool {
+		return a > b
+	}
+	_, _ = m1, m2
+}`
+	pkg := packageFromSource(code)
+	var file *ast.File
+	for _, f := range pkg.apkg.Files {
+		file = f
+		break
+	}
+	ptype := topLevelType("T", pkg)
+	var rewrites []rewrite
+	for _, am := range append([]augmentMethod{equalMethod}, orderedMethods...) {
+		rewrites = append(rewrites, rewrite{ptype, am.name, am.tok})
+	}
+	if err := replaceCode(file, rewrites, pkg.info); err != nil {
+		t.Fatal(err)
+	}
+
+	compare := func(funcName, want string) {
+		fdecl := file.Scope.Lookup(funcName).Decl
+		var buf bytes.Buffer
+		if err := printer.Fprint(&buf, pkg.fset, fdecl); err != nil {
+			t.Fatalf("%s: %v", funcName, err)
+		}
+		got := buf.String()
+		if got != want {
+			t.Errorf("%s:\n-- got --\n%s\n-- want --\n%s", funcName, got, want)
+		}
+	}
+
+	compare("f", wantf)
+	compare("g", wantg)
 }
 
 func TestExamples(t *testing.T) {

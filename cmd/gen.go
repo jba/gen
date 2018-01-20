@@ -349,6 +349,16 @@ type augmentMethod struct {
 	tok  token.Token // e.g. ==
 }
 
+var (
+	equalMethod    = augmentMethod{"Equal", token.EQL}
+	orderedMethods = []augmentMethod{
+		{"Less", token.LSS},
+		{"Greater", token.GTR},
+		{"LessEqual", token.LEQ},
+		{"GreaterEqual", token.GEQ},
+	}
+)
+
 func augmentedMethods(t types.Type) []augmentMethod {
 	var ams []augmentMethod
 	mset := types.NewMethodSet(t)
@@ -356,15 +366,11 @@ func augmentedMethods(t types.Type) []augmentMethod {
 		if mset.Lookup(nil, "Equal") != nil {
 			log.Printf("not augmenting comparable type %s with Equal because it already has an equal method", t)
 		} else {
-			ams = append(ams, augmentMethod{"Equal", token.EQL})
+			ams = append(ams, equalMethod)
 		}
 	}
 	if bt, ok := t.(*types.Basic); ok && (bt.Info()&types.IsOrdered != 0) {
-		ams = append(ams,
-			augmentMethod{"Less", token.LSS},
-			augmentMethod{"Greater", token.GTR},
-			augmentMethod{"LessEqual", token.LEQ},
-			augmentMethod{"GreaterEqual", token.GEQ})
+		ams = append(ams, orderedMethods...)
 	}
 	return ams
 }
@@ -485,6 +491,8 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, in
 			continue
 		}
 		typeSpec := paramPath[1].(*ast.TypeSpec)
+		// Add an import for the argument type if necessary.
+		// TODO: the named type from another package might be embedded in the type, like map[int]geo.Point.
 		if named, ok := b.arg.(*types.Named); ok {
 			tn := named.Obj()
 			name := tn.Pkg().Name()
@@ -658,6 +666,26 @@ func returnStmtBlock(e ast.Expr) *ast.BlockStmt {
 		},
 	}
 }
+
+// 	post := func(c *astutil.Cursor) bool {
+// 		switch n := c.Node().(type) {
+// 		case *ast.CallExpr:
+// 			for _, r := range rewrites {
+// 				if x, ok := r.match(n.Fun, info); ok {
+// 					*ep = &ast.BinaryExpr{
+// 						X:  x,
+// 						Op: r.op,
+// 						Y:  e.Args[0],
+// 					}
+// 					break
+// 				}
+// 			}
+
+// 	}
+// 	post := func(c *astutil.Cursor) bool {}
+// 		file = astutil.Apply(file, pre, post)
+// 	return nil
+// }
 
 func replaceCode(file *ast.File, rewrites []rewrite, info *types.Info) error {
 	replaceExpr(file, func(ep *ast.Expr) bool {
