@@ -26,34 +26,63 @@ import (
 	"testing"
 )
 
-func TestExamples(t *testing.T) {
-	log.SetOutput(ioutil.Discard)
+func TestComparableMod(t *testing.T) {
+	empty := types.NewInterface(nil, nil).Complete()
+	if !empty.Empty() {
+		t.Fatal("not empty")
+	}
+	T := newNamedType("T", empty)
 	for _, test := range []struct {
-		dir    string
-		outPkg string
-		specs  []string
+		in   types.Type
+		want bool
 	}{
-		{"stack", "intstack", []string{"T:int"}},
-		{"slices", "strslices", []string{"T:string"}},
-		{"slices", "timeslices", []string{"T:time.Time"}},
-		{"maps", "pointsets", []string{"K:github.com/jba/gen/examples/geo.Point", "V:bool"}},
+		{T, false},
+		{types.NewPointer(T), true},
+		// {newNamedType("U", T), false}, fails because types doesn't remember "type U T"
+		{types.NewArray(T, 1), false},
+		{types.NewSlice(T), false},
 	} {
-		t.Run(test.outPkg, func(t *testing.T) {
-			err := run(filepath.Join("github.com/jba/gen/examples", test.dir), "/tmp", test.outPkg, test.specs)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command("diff", "-u",
-				filepath.Join("../testdata/want", test.outPkg), filepath.Join("/tmp", test.outPkg))
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Log(string(out))
-				t.Fatal(err)
-			}
-			if len(out) > 0 {
-				t.Error(string(out))
-			}
-		})
+		got := comparableMod(test.in, T)
+		if got != test.want {
+			t.Errorf("%v: got %t, want %t", test.in, got, test.want)
+		}
+	}
+}
+
+func TestBuildType(t *testing.T) {
+	intType := types.Typ[types.Int]
+	lookup := func(path, name string) types.Type {
+		typ, err := lookupNamedType(path, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return typ
+	}
+
+	for _, test := range []struct {
+		in   string
+		want types.Type // nil means error
+	}{
+		{"", nil},
+		{"bork", nil},
+		{"map[int", nil},
+		{"[slice]", nil},
+		{"int", intType},
+		{"[]int", types.NewSlice(intType)},
+		{"[5]int", types.NewArray(intType, 5)},
+		{"map[int]bool", types.NewMap(intType, types.Typ[types.Bool])},
+		{"time.Time", lookup("time", "Time")},
+		{"map[time.Time][]int", types.NewMap(lookup("time", "Time"), types.NewSlice(intType))},
+		{`"github.com/jba/gen/examples/geo".Point`, lookup("github.com/jba/gen/examples/geo", "Point")},
+	} {
+		got, err := buildType(test.in)
+		if err != nil && test.want != nil {
+			t.Errorf(`%s: got "%v", want %s`, test.in, err, test.want)
+		} else if err == nil && test.want == nil {
+			t.Errorf("%s: got no error, wanted one", test.in)
+		} else if err == nil && !types.Identical(got, test.want) {
+			t.Errorf("%s: got %s, want %s", test.in, got, test.want)
+		}
 	}
 }
 
@@ -112,26 +141,65 @@ func TestCheckParamErrors(t *testing.T) {
 	}
 }
 
-func TestComparableMod(t *testing.T) {
-	empty := types.NewInterface(nil, nil).Complete()
-	if !empty.Empty() {
-		t.Fatal("not empty")
-	}
-	T := newNamedType("T", empty)
+func TestCheckBinding(t *testing.T) {
 	for _, test := range []struct {
-		in   types.Type
-		want bool
+		wantVal   interface{}
+		ptypeDecl string
+		atypeExpr string
 	}{
-		{T, false},
-		{types.NewPointer(T), true},
-		// {newNamedType("U", T), false}, fails because types doesn't remember "type U T"
-		{types.NewArray(T, 1), false},
-		{types.NewSlice(T), false},
+		{nil, "type T interface{}", "int"},
+		//		{nil, "type T interface{}", "time.Time"},
+		{nil, "type T interface { Equal(T) bool }", "int"}, // by augmentation
+		{nil, "type T interface { gen.Comparable }", "int"},
+		{missingMethodError(""), "type T interface { M() }", "int"},
 	} {
-		got := comparableMod(test.in, T)
-		if got != test.want {
-			t.Errorf("%v: got %t, want %t", test.in, got, test.want)
+		code := `package p; import "github.com/jba/gen";` + test.ptypeDecl
+		pkg := packageFromSource(code)
+		gtn, err := pkg.topLevelTypeName("T")
+		if err != nil {
+			t.Fatal(err)
 		}
+		atype, err := buildType(test.atypeExpr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = checkBinding(gtn.Type(), atype)
+		if test.wantVal == nil && err != nil {
+			t.Errorf(`%s, %s: wanted nil, got "%v" (%T)`, test.ptypeDecl, test.atypeExpr, err, err)
+		} else if got, want := reflect.TypeOf(err), reflect.TypeOf(test.wantVal); got != want {
+			t.Errorf("%s, %s: got error type %s, want %s", test.ptypeDecl, test.atypeExpr, got, want)
+		}
+	}
+}
+
+func TestExamples(t *testing.T) {
+	log.SetOutput(ioutil.Discard)
+	for _, test := range []struct {
+		dir    string
+		outPkg string
+		specs  []string
+	}{
+		{"stack", "intstack", []string{"T:int"}},
+		{"slices", "strslices", []string{"T:string"}},
+		{"slices", "timeslices", []string{"T:time.Time"}},
+		{"maps", "pointsets", []string{"K:github.com/jba/gen/examples/geo.Point", "V:bool"}},
+	} {
+		t.Run(test.outPkg, func(t *testing.T) {
+			err := run(filepath.Join("github.com/jba/gen/examples", test.dir), "/tmp", test.outPkg, test.specs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("diff", "-u",
+				filepath.Join("../testdata/want", test.outPkg), filepath.Join("/tmp", test.outPkg))
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Log(string(out))
+				t.Fatal(err)
+			}
+			if len(out) > 0 {
+				t.Error(string(out))
+			}
+		})
 	}
 }
 

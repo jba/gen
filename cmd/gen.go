@@ -163,7 +163,7 @@ var theImporter = compiledThenSourceImporter{
 	importer.For("source", nil),
 }
 
-var typecheck = (&types.Config{Importer: theImporter}).Check
+var typecheck = (&types.Config{Importer: theImporter, DisableUnusedImportCheck: true}).Check
 
 type BindingSpec struct {
 	param         string
@@ -216,19 +216,10 @@ func specToBinding(spec *BindingSpec, gpkg *Package) (*Binding, error) {
 			return nil, fmt.Errorf("no basic type %q", spec.argTypeName)
 		}
 	} else {
-		tpkg, err := theImporter.Import(spec.argImportPath)
+		atype, err = lookupNamedType(spec.argImportPath, spec.argTypeName)
 		if err != nil {
 			return nil, err
 		}
-		sobj := tpkg.Scope().Lookup(spec.argTypeName)
-		if sobj == nil {
-			return nil, fmt.Errorf("cannot find %s in package %s", spec.argTypeName, tpkg.Name())
-		}
-		stn, ok := sobj.(*types.TypeName)
-		if !ok {
-			return nil, fmt.Errorf("%s is not a named type in package %s", spec.argTypeName, tpkg.Path())
-		}
-		atype = stn.Type()
 	}
 	if err := checkBinding(gtn.Type(), atype); err != nil {
 		return nil, fmt.Errorf("%s: %v", gpkg.fset.Position(gtn.Pos()), err)
@@ -238,6 +229,22 @@ func specToBinding(spec *BindingSpec, gpkg *Package) (*Binding, error) {
 		param: gtn,
 		arg:   atype,
 	}, nil
+}
+
+func lookupNamedType(importPath, typeName string) (types.Type, error) {
+	tpkg, err := theImporter.Import(importPath)
+	if err != nil {
+		return nil, err
+	}
+	sobj := tpkg.Scope().Lookup(typeName)
+	if sobj == nil {
+		return nil, fmt.Errorf("cannot find %s in package %s", typeName, tpkg.Name())
+	}
+	stn, ok := sobj.(*types.TypeName)
+	if !ok {
+		return nil, fmt.Errorf("%s is not a named type in package %s", typeName, tpkg.Path())
+	}
+	return stn.Type(), nil
 }
 
 type needsComparableError string
@@ -251,6 +258,10 @@ func (e needsNillableError) Error() string { return string(e) }
 type notInterfaceError string
 
 func (e notInterfaceError) Error() string { return string(e) }
+
+type missingMethodError string
+
+func (e missingMethodError) Error() string { return string(e) }
 
 func checkParam(gtn *types.TypeName, gpkg *Package) error {
 	putype, ok := gtn.Type().Underlying().(*types.Interface)
@@ -293,17 +304,31 @@ func checkBinding(ptype, atype types.Type) error {
 		} else {
 			msg = "is missing"
 		}
-		return fmt.Errorf("%s does not implement %s: method %s %s", atype, ptype,
-			method.Name(), msg)
+		return missingMethodError(fmt.Sprintf("%s does not implement %s: method %s %s", atype, ptype,
+			method.Name(), msg))
 	}
 	if implementsSpecialInterface(putype, "Comparable") && !types.Comparable(atype) {
-		return fmt.Errorf("%s is not comparable but %s requires it", atype, ptype)
+		return needsComparableError(fmt.Sprintf("%s is not comparable but %s requires it", atype, ptype))
 	}
-	if implementsSpecialInterface(putype, "Nillable") &&
-	// TODO: check Nillable
+	// if implementsSpecialInterface(putype, "Nillable") && !hasNil(atype) {
+	// 	return needsNillableError(fmt.Sprintf("%s is not nillable but %s requires it", atype, ptype))
+	// }
 	return nil
 }
 
+// hasNil reports whether a type includes the nil value.
+// Code from https://golang.org/src/go/types/predicates.go.
+func hasNil(typ types.Type) bool {
+	switch t := typ.Underlying().(type) {
+	case *types.Basic:
+		return t.Kind() == types.UnsafePointer
+	case *types.Slice, *types.Pointer, *types.Signature, *types.Interface, *types.Map, *types.Chan:
+		return true
+	}
+	return false
+}
+
+// augmentedType creates a new type that may add methods to t.
 // Comparable types behave like they implement Equal(T) bool (if they don't already).
 // Ordered types (which are only basic types) behave like they implement Less(T)  bool,
 // Greater(T) bool, LessEqual(T) bool and GreaterEqual(T) bool.
@@ -1069,7 +1094,24 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 				return b, nil
 			}
 		}
-		return nil, errors.New("can only handle basic types for now")
+		return nil, fmt.Errorf("unknown type name %s", e.Name)
+
+	case *ast.SelectorExpr:
+		var importPath string
+		switch x := e.X.(type) {
+		case *ast.Ident:
+			importPath = x.Name
+		case *ast.BasicLit:
+			var err error
+			importPath, err = strconv.Unquote(x.Value)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("bad selector expression type %T", x)
+		}
+		return lookupNamedType(importPath, e.Sel.Name)
+
 	case *ast.MapType:
 		k, err := exprToType(e.Key)
 		if err != nil {
@@ -1080,6 +1122,7 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 			return nil, err
 		}
 		return types.NewMap(k, v), nil
+
 	case *ast.ArrayType:
 		elType, err := exprToType(e.Elt)
 		if err != nil {
@@ -1088,9 +1131,9 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 		if e.Len == nil {
 			return types.NewSlice(elType), nil
 		} else {
-			bl, ok := e.Elt.(*ast.BasicLit)
+			bl, ok := e.Len.(*ast.BasicLit)
 			if !ok {
-				return nil, errors.New("array len is not a literal integer")
+				return nil, errors.New("array length is not a literal integer")
 			}
 			length, err := strconv.ParseInt(bl.Value, 10, 64)
 			if err != nil {
@@ -1098,6 +1141,7 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 			}
 			return types.NewArray(elType, length), nil
 		}
+
 	default:
 		return nil, fmt.Errorf("unknown type expr %T", e)
 	}
