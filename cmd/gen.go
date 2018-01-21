@@ -1,7 +1,6 @@
 // TODO
-// - rewrite
 // - make sure we cause an error when argtype is map[<non-comparable]X
-// - rewrite type assertions and switches
+// - rewrite type switches
 // - a generic package importing other generic packages (ones with interface definitions)
 // - When a generic param has the Comparable constraint, allow instantiations of interface types.
 //   That mirrors the compiler, which allows interface types in == and map indexing and defers the comparable
@@ -17,6 +16,7 @@
 // - container/ring
 // - jba/btree
 // - pubsub/pullstream
+// - bundler
 // - lru.Cache?
 // - sync.Map?
 
@@ -185,9 +185,8 @@ func parseBindingSpec(s string) (*BindingSpec, error) {
 }
 
 type Binding struct {
-	param    *types.TypeName
-	arg      types.Type
-	rewrites []*rewrite
+	param *types.TypeName
+	arg   types.Type
 }
 
 func specToBinding(spec *BindingSpec, gpkg *Package) (*Binding, error) {
@@ -476,14 +475,14 @@ func substitutePackage(gpkg *Package, bindings []*Binding, pkgName string) error
 		if strings.HasSuffix(filename, "_test.go") {
 			continue
 		}
-		if err := substituteFile(filename, bindings, rws, gpkg.info, gpkg.fset, file, pkgName); err != nil {
+		if err := substituteFile(filename, bindings, rws, gpkg, file, pkgName); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, info *types.Info, fset *token.FileSet, file *ast.File, name string) error {
+func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, pkg *Package, file *ast.File, name string) error {
 	file.Name.Name = name
 	for _, b := range bindings {
 		paramPath, _ := astutil.PathEnclosingInterval(file, b.param.Pos(), b.param.Pos())
@@ -500,7 +499,7 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, in
 			if name == path.Base(ipath) {
 				name = ""
 			}
-			astutil.AddNamedImport(fset, file, name, ipath)
+			astutil.AddNamedImport(pkg.fset, file, name, ipath)
 		}
 		// Turn the type spec into an alias if it isn't already.
 		if !typeSpec.Assign.IsValid() {
@@ -508,10 +507,10 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, in
 		}
 		typeSpec.Type = exprForType(b.arg)
 	}
-	if err := replaceCode(file, rewrites, info); err != nil {
+	if err := replaceCode(file, bindings, rewrites, pkg); err != nil {
 		return err
 	}
-	for _, impgrp := range astutil.Imports(fset, file) {
+	for _, impgrp := range astutil.Imports(pkg.fset, file) {
 		for _, impspec := range impgrp {
 			path := importPath(impspec)
 			if !astutil.UsesImport(file, path) {
@@ -519,7 +518,7 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, in
 				if impspec.Name != nil {
 					name = impspec.Name.Name
 				}
-				astutil.DeleteNamedImport(fset, file, name, path)
+				astutil.DeleteNamedImport(pkg.fset, file, name, path)
 			}
 		}
 	}
@@ -667,13 +666,17 @@ func returnStmtBlock(e ast.Expr) *ast.BlockStmt {
 	}
 }
 
-func replaceCode(file *ast.File, rewrites []rewrite, info *types.Info) error {
+func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *Package) error {
+	var err error
 	var post func(c *astutil.Cursor) bool
 	pre := func(c *astutil.Cursor) bool {
+		if err != nil {
+			return false
+		}
 		switch n := c.Node().(type) {
 		case *ast.CallExpr:
 			for _, r := range rewrites {
-				if x, ok := r.match(n.Fun, info); ok {
+				if x, ok := r.match(n.Fun, pkg.info); ok {
 					c.Replace(&ast.BinaryExpr{
 						X:  x,
 						Op: r.op,
@@ -687,10 +690,10 @@ func replaceCode(file *ast.File, rewrites []rewrite, info *types.Info) error {
 			// Not a call, because we would have caught that above. A method expression or value,
 			// like t.Less or T.Less.
 			for _, r := range rewrites {
-				if x, ok := r.match(n, info); ok {
+				if x, ok := r.match(n, pkg.info); ok {
 					name := r.argType.(*types.Named).Obj().Name()
 					// The function denoted by n has one or two arguments.
-					if info.Types[n].Type.(*types.Signature).Params().Len() == 2 {
+					if pkg.info.Types[n].Type.(*types.Signature).Params().Len() == 2 {
 						c.Replace(twoArgOpFuncLit(name, r.op))
 					} else {
 						c.Replace(oneArgOpFuncCall(x, name, r.op))
@@ -698,11 +701,56 @@ func replaceCode(file *ast.File, rewrites []rewrite, info *types.Info) error {
 					break
 				}
 			}
+
+		case *ast.AssignStmt:
+			if len(n.Lhs) == 2 && len(n.Rhs) == 1 {
+				if e, ok := n.Rhs[0].(*ast.TypeAssertExpr); ok {
+					n.Rhs = replaceTwoValueAssert(e, bindings, pkg)
+				}
+			}
+
+		case *ast.ValueSpec:
+			if len(n.Names) == 2 && len(n.Values) == 1 {
+				if e, ok := n.Values[0].(*ast.TypeAssertExpr); ok {
+					n.Values = replaceTwoValueAssert(e, bindings, pkg)
+				}
+			}
+
+		case *ast.TypeAssertExpr:
+			if n.Type == nil {
+				panic("type switch unimp")
+			}
+			for _, b := range bindings {
+				if !types.Identical(pkg.info.Types[n.X].Type, b.param.Type()) {
+					continue
+				}
+				if !types.Identical(pkg.info.Types[n.Type].Type, b.arg) {
+					err = fmt.Errorf("%s: failed type assertion", pkg.fset.Position(n.Pos()))
+					return false
+				}
+				c.Replace(n.X)
+				break
+			}
 		}
 		return true
 	}
 	astutil.Apply(file, pre, post)
-	return nil
+	return err
+}
+
+func replaceTwoValueAssert(e *ast.TypeAssertExpr, bindings []*Binding, pkg *Package) []ast.Expr {
+	for _, b := range bindings {
+		if !types.Identical(pkg.info.Types[e.X].Type, b.param.Type()) {
+			continue
+		}
+		etype := pkg.info.Types[e.Type].Type
+		if types.Identical(etype, b.arg) {
+			return []ast.Expr{e.X, lit("true")}
+		} else {
+			return []ast.Expr{zeroExpr(etype), lit("false")}
+		}
+	}
+	return []ast.Expr{e}
 }
 
 // If t needs to implement Comparable in pkg, return a node that proves it.
@@ -759,6 +807,7 @@ func needsComparable(n ast.Node, t types.Type, typeOf func(ast.Expr) types.Type)
 	}
 }
 
+// Reports whether there is a case expression for which f returns true.
 func someCaseExpr(n *ast.SwitchStmt, f func(ast.Expr) bool) bool {
 	for _, s := range n.Body.List {
 		if c, ok := s.(*ast.CaseClause); ok {
@@ -998,4 +1047,43 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 	default:
 		return nil, fmt.Errorf("unknown type expr %T", e)
 	}
+}
+
+// Constructs an expression for the zero value of type t.
+func zeroExpr(t types.Type) ast.Expr {
+	if nt, ok := t.(*types.Named); ok {
+		if _, ok := t.Underlying().(*types.Struct); ok {
+			return &ast.CompositeLit{Type: lit(nt.Obj().Name())}
+		}
+	}
+	switch t := t.Underlying().(type) {
+	case *types.Basic:
+		switch {
+		case t.Info()&types.IsBoolean != 0:
+			return lit("false")
+		case t.Info()&types.IsNumeric != 0:
+			return lit("0")
+		case t.Info()&types.IsString != 0:
+			return lit(`""`)
+		default:
+			panic("bad basic type")
+		}
+	case *types.Pointer, *types.Interface, *types.Chan, *types.Slice, *types.Signature, *types.Map:
+		return lit("nil")
+	case *types.Struct:
+		return &ast.CompositeLit{Type: lit(t.String())}
+	case *types.Array:
+		return &ast.CompositeLit{
+			Type: &ast.ArrayType{
+				Len: lit(strconv.Itoa(int(t.Len()))),
+				Elt: lit(t.Elem().String()),
+			},
+		}
+	default:
+		panic("unknown type")
+	}
+}
+
+func lit(s string) *ast.BasicLit {
+	return &ast.BasicLit{Value: s}
 }

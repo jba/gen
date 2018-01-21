@@ -184,94 +184,165 @@ func topLevelType(name string, pkg *Package) types.Type {
 }
 
 func TestReplaceCode(t *testing.T) {
-	code := `
-	package p
-	type T interface {
-		Equal(T) bool
-		Less(T) bool
-		Greater(T) bool
-		GreaterEqual(T) bool
-		LessEqual(T) bool
-	}
-
-	func f(x, y T) bool {
-		if x.Equal(y) {
-			return x.Greater(y)
-		}
-		for x.GreaterEqual(y) {
-			switch {
-			case x.LessEqual(y): return true
-			default: return x.Less(y)
+	for _, test := range []struct {
+		in, want string
+	}{
+		{
+			in: `func f(x, y T) bool {
+				if x.Equal(y) {
+					return x.Greater(y)
+				}
+				for x.GreaterEqual(y) {
+					switch {
+					case x.LessEqual(y): return true
+					default: return x.Less(y)
+					}
+				}
+				return false
+			}`,
+			want: `func f(x, y T) bool {
+				if x == y {
+					return x > y
+				}
+				for x >= y {
+					switch {
+					case x <= y:
+						return true
+					default:
+						return x < y
+					}
+				}
+				return false
+			}`,
+		},
+		{
+			in: `func f(x T) bool {
+					return func() T { if (x.Equal(x)) { return x }; return x }().Greater(x)
+                }`,
+			want: `func f(x T) bool {
+					return func() T {
+							if x == x {
+								return x
+							 }
+							 return x
+						}() > x
+				  }`,
+		},
+		{
+			in: `func f(x T) {
+				m1 := x.Less
+				if (T.Greater)(x, x) {
+					_ = m1
+				}
+			}`,
+			want: `func f(x T) {
+				m1 := func(a T) func(T) bool {
+					return func(b T) bool {
+						return a < b
+					}
+				}(x)
+				if (func(a, b T) bool {
+					return a > b
+				})(x, x) {
+					_ = m1
+				}
+			}`,
+		},
+		{
+			in:   `func f(x I) int { return x.(int) + x.(int) }`,
+			want: `func f(x I) int { return x + x }`,
+		},
+		{
+			in:   `func f(x I) bool { return x.(bool) }`,
+			want: "", // error
+		},
+		{
+			in:   `func f(x I) { var y, ok = x.(int); _, _ = y, ok }`,
+			want: `func f(x I) { var y, ok = x, true; _, _ = y, ok }`,
+		},
+		{
+			in:   `func f(x I) { var y, ok = x.(string); _, _ = y, ok }`,
+			want: `func f(x I) { var y, ok = "", false; _, _ = y, ok }`,
+		},
+		{
+			in:   `func f(x I) { y, ok := x.(int); _, _ = y, ok }`,
+			want: `func f(x I) { y, ok := x, true; _, _ = y, ok }`,
+		},
+		{
+			in:   `func f(x I) { y, ok := x.(bool); _, _ = y, ok }`,
+			want: `func f(x I) { y, ok := false, false; _, _ = y, ok }`,
+		},
+		{
+			in:   `func f(x I) { y, ok := x.([]int); _, _ = y, ok }`,
+			want: `func f(x I) { y, ok := nil, false; _, _ = y, ok }`,
+		},
+		{
+			in:   `func f(x I) { y, ok := x.(struct{}); _, _ = y, ok }`,
+			want: `func f(x I) { y, ok := struct{}{}, false; _, _ = y, ok }`,
+		},
+		{
+			in:   `func f(x I) { type S struct{ i int }; y, ok := x.(S); _, _ = y, ok }`,
+			want: `func f(x I) { type S struct{ i int }; y, ok := S{}, false; _, _ = y, ok }`,
+		},
+	} {
+		code := `
+			package p
+			type T interface {
+				Equal(T) bool
+				Less(T) bool
+				Greater(T) bool
+				GreaterEqual(T) bool
+				LessEqual(T) bool
 			}
+			type I interface{}
+	    ` + test.in
+		pkg := packageFromSource(code)
+		var file *ast.File
+		for _, f := range pkg.apkg.Files {
+			file = f
+			break
 		}
-		return false
-	}
-
-	func g(x T) {
-		m1 := x.Less
-		if (T.Greater)(x, x) {
-			_ = m1
+		ptype := topLevelType("T", pkg)
+		var rewrites []rewrite
+		for _, am := range append([]augmentMethod{equalMethod}, orderedMethods...) {
+			rewrites = append(rewrites, rewrite{ptype, am.name, am.tok})
 		}
-	}
-`
-
-	wantf := `func f(x, y T) bool {
-	if x == y {
-		return x > y
-	}
-	for x >= y {
-		switch {
-		case x <= y:
-			return true
-		default:
-			return x < y
+		tn, err := pkg.topLevelTypeName("I")
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	return false
-}`
-
-	wantg := `func g(x T) {
-	m1 := func(a T) func(T) bool {
-		return func(b T) bool {
-			return a < b
+		bindings := []*Binding{
+			{tn, types.Typ[types.Int]},
 		}
-	}(x)
-	if (func(a, b T) bool {
-		return a > b
-	})(x, x) {
-		_ = m1
-	}
-}`
-
-	pkg := packageFromSource(code)
-	var file *ast.File
-	for _, f := range pkg.apkg.Files {
-		file = f
-		break
-	}
-	ptype := topLevelType("T", pkg)
-	var rewrites []rewrite
-	for _, am := range append([]augmentMethod{equalMethod}, orderedMethods...) {
-		rewrites = append(rewrites, rewrite{ptype, am.name, am.tok})
-	}
-	if err := replaceCode(file, rewrites, pkg.info); err != nil {
-		t.Fatal(err)
-	}
-
-	compare := func(funcName, want string) {
-		fdecl := file.Scope.Lookup(funcName).Decl
+		err = replaceCode(file, bindings, rewrites, pkg)
+		if err != nil {
+			if test.want == "" {
+				continue
+			}
+			t.Fatal(err)
+		}
+		fdecl := file.Scope.Lookup("f").Decl
 		var buf bytes.Buffer
 		if err := printer.Fprint(&buf, pkg.fset, fdecl); err != nil {
-			t.Fatalf("%s: %v", funcName, err)
+			t.Fatalf("%s: %v", test.in, err)
 		}
 		got := buf.String()
-		if got != want {
-			t.Errorf("%s:\n-- got --\n%s\n-- want --\n%s", funcName, got, want)
+		if trim(got) != trim(test.want) {
+			t.Errorf("-- got --\n%s\n-- want --\n%s", got, test.want)
 		}
 	}
+}
 
-	compare("f", wantf)
-	compare("g", wantg)
+// Remove blank lines and trim each line.
+func trim(s string) string {
+	var lines []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, strings.Replace(line, "\t", " ", -1))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func TestExamples(t *testing.T) {
@@ -303,6 +374,10 @@ func TestExamples(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestZeroExpr(t *testing.T) {
+	// TODO: test zeroExpr
 }
 
 func Test_TypesInfo(t *testing.T) {
