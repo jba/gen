@@ -667,37 +667,18 @@ func returnStmtBlock(e ast.Expr) *ast.BlockStmt {
 	}
 }
 
-// 	post := func(c *astutil.Cursor) bool {
-// 		switch n := c.Node().(type) {
-// 		case *ast.CallExpr:
-// 			for _, r := range rewrites {
-// 				if x, ok := r.match(n.Fun, info); ok {
-// 					*ep = &ast.BinaryExpr{
-// 						X:  x,
-// 						Op: r.op,
-// 						Y:  e.Args[0],
-// 					}
-// 					break
-// 				}
-// 			}
-
-// 	}
-// 	post := func(c *astutil.Cursor) bool {}
-// 		file = astutil.Apply(file, pre, post)
-// 	return nil
-// }
-
 func replaceCode(file *ast.File, rewrites []rewrite, info *types.Info) error {
-	replaceExpr(file, func(ep *ast.Expr) bool {
-		switch e := (*ep).(type) {
+	var post func(c *astutil.Cursor) bool
+	pre := func(c *astutil.Cursor) bool {
+		switch n := c.Node().(type) {
 		case *ast.CallExpr:
 			for _, r := range rewrites {
-				if x, ok := r.match(e.Fun, info); ok {
-					*ep = &ast.BinaryExpr{
+				if x, ok := r.match(n.Fun, info); ok {
+					c.Replace(&ast.BinaryExpr{
 						X:  x,
 						Op: r.op,
-						Y:  e.Args[0],
-					}
+						Y:  n.Args[0],
+					})
 					break
 				}
 			}
@@ -706,185 +687,22 @@ func replaceCode(file *ast.File, rewrites []rewrite, info *types.Info) error {
 			// Not a call, because we would have caught that above. A method expression or value,
 			// like t.Less or T.Less.
 			for _, r := range rewrites {
-				if x, ok := r.match(e, info); ok {
+				if x, ok := r.match(n, info); ok {
 					name := r.argType.(*types.Named).Obj().Name()
-					// The function denoted by e has one or two arguments.
-					if info.Types[e].Type.(*types.Signature).Params().Len() == 2 {
-						*ep = twoArgOpFuncLit(name, r.op)
+					// The function denoted by n has one or two arguments.
+					if info.Types[n].Type.(*types.Signature).Params().Len() == 2 {
+						c.Replace(twoArgOpFuncLit(name, r.op))
 					} else {
-						*ep = oneArgOpFuncCall(x, name, r.op)
+						c.Replace(oneArgOpFuncCall(x, name, r.op))
 					}
 					break
 				}
 			}
 		}
 		return true
-	})
+	}
+	astutil.Apply(file, pre, post)
 	return nil
-}
-
-func replaceExpr(n ast.Node, f func(*ast.Expr) bool) {
-	rep := func(pe *ast.Expr) {
-		if f(pe) {
-			replaceExpr(*pe, f)
-		}
-	}
-
-	elist := func(es []ast.Expr) {
-		for i := range es {
-			rep(&es[i])
-		}
-	}
-
-	slist := func(ss []ast.Stmt) {
-		for _, s := range ss {
-			replaceExpr(s, f)
-		}
-	}
-
-	dlist := func(ds []ast.Decl) {
-		for _, d := range ds {
-			replaceExpr(d, f)
-		}
-	}
-
-	switch n := n.(type) {
-	case *ast.AssignStmt:
-		elist(n.Lhs)
-		elist(n.Rhs)
-
-	case *ast.BinaryExpr:
-		rep(&n.X)
-		rep(&n.Y)
-
-	case *ast.BlockStmt:
-		slist(n.List)
-
-	case *ast.CallExpr:
-		rep(&n.Fun)
-		elist(n.Args)
-
-	case *ast.CaseClause:
-		elist(n.List)
-		slist(n.Body)
-
-	case *ast.CommClause:
-		replaceExpr(n.Comm, f)
-		slist(n.Body)
-
-	case *ast.CompositeLit:
-		rep(&n.Type)
-		elist(n.Elts)
-
-	case *ast.DeclStmt:
-		replaceExpr(n.Decl, f)
-
-	case *ast.DeferStmt:
-		//TODO: what if we need to replace the call itself?
-		// e.g. defer t.Less(u)
-		replaceExpr(n.Call, f)
-
-	case *ast.ExprStmt:
-		rep(&n.X)
-
-	case *ast.File:
-		dlist(n.Decls)
-
-	case *ast.ForStmt:
-		replaceExpr(n.Init, f)
-		rep(&n.Cond)
-		replaceExpr(n.Post, f)
-		replaceExpr(n.Body, f)
-
-	case *ast.FuncDecl:
-		replaceExpr(n.Body, f)
-
-	case *ast.FuncLit:
-		replaceExpr(n.Body, f)
-
-	case *ast.GenDecl:
-		for _, s := range n.Specs {
-			replaceExpr(s, f)
-		}
-
-	case *ast.GoStmt:
-		//TODO: what if we need to replace the call itself?
-		// e.g. go t.Less(u)
-		replaceExpr(n.Call, f)
-
-	case *ast.IfStmt:
-		replaceExpr(n.Init, f)
-		rep(&n.Cond)
-		replaceExpr(n.Body, f)
-		replaceExpr(n.Else, f)
-
-	case *ast.IncDecStmt:
-		rep(&n.X)
-
-	case *ast.IndexExpr:
-		rep(&n.X)
-		rep(&n.Index)
-
-	case *ast.KeyValueExpr:
-		rep(&n.Key)
-		rep(&n.Value)
-
-	case *ast.LabeledStmt:
-		replaceExpr(n.Stmt, f)
-
-	case *ast.ParenExpr:
-		rep(&n.X)
-
-	case *ast.RangeStmt:
-		rep(&n.Key)
-		rep(&n.Value)
-		rep(&n.X)
-		replaceExpr(n.Body, f)
-
-	case *ast.ReturnStmt:
-		elist(n.Results)
-
-	case *ast.SelectStmt:
-		replaceExpr(n.Body, f)
-
-	case *ast.SelectorExpr:
-		rep(&n.X)
-
-	case *ast.SendStmt:
-		rep(&n.Chan)
-		rep(&n.Value)
-
-	case *ast.SliceExpr:
-		rep(&n.X)
-		rep(&n.Low)
-		rep(&n.High)
-		rep(&n.Max)
-
-	case *ast.StarExpr:
-		rep(&n.X)
-
-	case *ast.SwitchStmt:
-		replaceExpr(n.Init, f)
-		rep(&n.Tag)
-		replaceExpr(n.Body, f)
-
-	case *ast.TypeAssertExpr:
-		rep(&n.X)
-		// Don't do n.Type because it's a type.
-
-	case *ast.TypeSwitchStmt:
-		replaceExpr(n.Init, f)
-		replaceExpr(n.Assign, f)
-		replaceExpr(n.Body, f)
-
-	case *ast.UnaryExpr:
-		rep(&n.X)
-
-	case *ast.ValueSpec:
-		elist(n.Values)
-
-		// Ignore all other node types.
-	}
 }
 
 // If t needs to implement Comparable in pkg, return a node that proves it.

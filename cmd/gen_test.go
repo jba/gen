@@ -193,6 +193,7 @@ func TestReplaceCode(t *testing.T) {
 		GreaterEqual(T) bool
 		LessEqual(T) bool
 	}
+
 	func f(x, y T) bool {
 		if x.Equal(y) {
 			return x.Greater(y)
@@ -205,10 +206,12 @@ func TestReplaceCode(t *testing.T) {
 		}
 		return false
 	}
+
 	func g(x T) {
 		m1 := x.Less
-		m2 := T.Greater
-		_, _ = m1, m2
+		if (T.Greater)(x, x) {
+			_ = m1
+		}
 	}
 `
 
@@ -233,11 +236,13 @@ func TestReplaceCode(t *testing.T) {
 			return a < b
 		}
 	}(x)
-	m2 := func(a, b T) bool {
+	if (func(a, b T) bool {
 		return a > b
+	})(x, x) {
+		_ = m1
 	}
-	_, _ = m1, m2
 }`
+
 	pkg := packageFromSource(code)
 	var file *ast.File
 	for _, f := range pkg.apkg.Files {
