@@ -1,10 +1,12 @@
 // TODO
-// - make sure we cause an error when argtype is map[<non-comparable]X
 // - rewrite type switches
+// - typecheck the output to make sure we didn't miss anything (like "var x T = 7").
 // - a generic package importing other generic packages (ones with interface definitions)
+//
 // - When a generic param has the Comparable constraint, allow instantiations of interface types.
 //   That mirrors the compiler, which allows interface types in == and map indexing and defers the comparable
 //   check to runtime.
+
 // - Given
 //     type T interface{}
 //     type U T
@@ -70,7 +72,7 @@ func requireFlag(flag, val string) {
 }
 
 func run(genPath, outputDir, outputName string, args []string) error {
-	gpkg, err := loadPackage(genPath)
+	pkg, err := loadPackage(genPath)
 	if err != nil {
 		return err
 	}
@@ -80,7 +82,7 @@ func run(genPath, outputDir, outputName string, args []string) error {
 		if err != nil {
 			return err
 		}
-		b, err := specToBinding(bs, gpkg)
+		b, err := specToBinding(bs, pkg)
 		if err != nil {
 			return err
 		}
@@ -89,7 +91,7 @@ func run(genPath, outputDir, outputName string, args []string) error {
 	if len(bindings) == 0 {
 		return errors.New("need bindings")
 	}
-	if err := substitutePackage(gpkg, bindings, outputName); err != nil {
+	if err := substitutePackage(pkg, bindings, outputName); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
@@ -99,20 +101,17 @@ func run(genPath, outputDir, outputName string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := printPackage(gpkg, tempOutDir); err != nil {
+	if err := printPackage(pkg, tempOutDir); err != nil {
 		if err := os.Remove(tempOutDir); err != nil {
 			log.Printf("removing %s: %v", tempOutDir, err)
 		}
 		return err
 	}
-	destDir := filepath.Join(outputDir, gpkg.apkg.Name)
+	destDir := filepath.Join(outputDir, pkg.apkg.Name)
 	if err := os.RemoveAll(destDir); err != nil {
 		return err
 	}
-	if err := os.Rename(tempOutDir, destDir); err != nil {
-		return err
-	}
-	return nil
+	return os.Rename(tempOutDir, destDir)
 }
 
 func printPackage(pkg *Package, dir string) error {
@@ -160,9 +159,8 @@ var theImporter = compiledThenSourceImporter{
 var typecheck = (&types.Config{Importer: theImporter, DisableUnusedImportCheck: true}).Check
 
 type BindingSpec struct {
-	param         string
-	argImportPath string
-	argTypeName   string
+	param string
+	arg   string
 }
 
 // An arg looks like
@@ -172,16 +170,23 @@ func parseBindingSpec(s string) (*BindingSpec, error) {
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("bad spec %q", s)
 	}
-	sa := &BindingSpec{param: parts[0]}
+	bs := &BindingSpec{param: parts[0]}
 	sub := parts[1]
+
 	i := strings.LastIndex(sub, ".")
-	if i < 0 {
-		sa.argImportPath = ""
-		sa.argTypeName = sub
-	} else {
-		sa.argImportPath, sa.argTypeName = sub[:i], sub[i+1:]
+	switch {
+	case i < 0:
+		bs.arg = sub
+	case i == 0:
+		return nil, fmt.Errorf("empty import path in spec %q", s)
+	default:
+		path, name := sub[:i], sub[i+1:]
+		if path[0] != '"' {
+			path = strconv.Quote(path)
+		}
+		bs.arg = path + "." + name
 	}
-	return sa, nil
+	return bs, nil
 }
 
 type Binding struct {
@@ -189,55 +194,26 @@ type Binding struct {
 	arg   types.Type
 }
 
-func specToBinding(spec *BindingSpec, gpkg *Package) (*Binding, error) {
-	gtn, err := gpkg.topLevelTypeName(spec.param)
+func specToBinding(spec *BindingSpec, pkg *Package) (*Binding, error) {
+	gtn, err := pkg.topLevelTypeName(spec.param)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkParam(gtn, gpkg); err != nil {
-		return nil, fmt.Errorf("%s: %v", gpkg.fset.Position(gtn.Pos()), err)
+	if err := checkParam(gtn, pkg); err != nil {
+		return nil, fmt.Errorf("%s: %v", pkg.fset.Position(gtn.Pos()), err)
 	}
-	var atype types.Type
-	if spec.argImportPath == "" {
-		for _, bt := range types.Typ {
-			if spec.argTypeName == bt.Name() {
-				atype = bt
-				break
-			}
-		}
-		if atype == nil {
-			return nil, fmt.Errorf("no basic type %q", spec.argTypeName)
-		}
-	} else {
-		atype, err = lookupNamedType(spec.argImportPath, spec.argTypeName)
-		if err != nil {
-			return nil, err
-		}
+	atype, err := buildType(spec.arg)
+	if err != nil {
+		return nil, err
 	}
 	if err := checkBinding(gtn.Type(), atype); err != nil {
-		return nil, fmt.Errorf("%s: %v", gpkg.fset.Position(gtn.Pos()), err)
+		return nil, fmt.Errorf("%s: %v", pkg.fset.Position(gtn.Pos()), err)
 	}
 
 	return &Binding{
 		param: gtn,
 		arg:   atype,
 	}, nil
-}
-
-func lookupNamedType(importPath, typeName string) (types.Type, error) {
-	tpkg, err := theImporter.Import(importPath)
-	if err != nil {
-		return nil, err
-	}
-	sobj := tpkg.Scope().Lookup(typeName)
-	if sobj == nil {
-		return nil, fmt.Errorf("cannot find %s in package %s", typeName, tpkg.Name())
-	}
-	stn, ok := sobj.(*types.TypeName)
-	if !ok {
-		return nil, fmt.Errorf("%s is not a named type in package %s", typeName, tpkg.Path())
-	}
-	return stn.Type(), nil
 }
 
 type needsComparableError string
@@ -256,27 +232,27 @@ type missingMethodError string
 
 func (e missingMethodError) Error() string { return string(e) }
 
-func checkParam(gtn *types.TypeName, gpkg *Package) error {
+func checkParam(gtn *types.TypeName, pkg *Package) error {
 	putype, ok := gtn.Type().Underlying().(*types.Interface)
 	if !ok {
 		return notInterfaceError(fmt.Sprintf("type must be interface, not %T\n", gtn.Type()))
 	}
 
-	if msg := checkSpecialInterface("Comparable", gtn, putype, gpkg, comparableNode); msg != "" {
+	if msg := checkSpecialInterface("Comparable", gtn, putype, pkg, comparableNode); msg != "" {
 		return needsComparableError(msg)
 	}
-	if msg := checkSpecialInterface("Nillable", gtn, putype, gpkg, nillableNode); msg != "" {
+	if msg := checkSpecialInterface("Nillable", gtn, putype, pkg, nillableNode); msg != "" {
 		return needsNillableError(msg)
 	}
 	return nil
 }
 
-func checkSpecialInterface(name string, gtn *types.TypeName, iface *types.Interface, gpkg *Package, finder func(types.Type, *Package) ast.Node) string {
-	node := finder(gtn.Type(), gpkg)
+func checkSpecialInterface(name string, gtn *types.TypeName, iface *types.Interface, pkg *Package, finder func(types.Type, *Package) ast.Node) string {
+	node := finder(gtn.Type(), pkg)
 	has := implementsSpecialInterface(iface, name)
 	if node != nil && !has {
 		return fmt.Sprintf("param %s does not implement gen.%s, but it is required at %s",
-			gtn.Name(), name, gpkg.fset.Position(node.Pos()))
+			gtn.Name(), name, pkg.fset.Position(node.Pos()))
 	}
 	if node == nil && has {
 		log.Printf("param %s includes gen.%s, but does not need it", gtn.Name(), name)
@@ -456,8 +432,8 @@ func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
 	}
 }
 
-// Modifies the asts in gpkg. pkgName is the new package name.
-func substitutePackage(gpkg *Package, bindings []*Binding, pkgName string) error {
+// Modifies the asts in pkg. pkgName is the new package name.
+func substitutePackage(pkg *Package, bindings []*Binding, pkgName string) error {
 	var rws []rewrite
 	for _, b := range bindings {
 		for _, am := range augmentedMethods(b.arg) {
@@ -468,14 +444,14 @@ func substitutePackage(gpkg *Package, bindings []*Binding, pkgName string) error
 			})
 		}
 	}
-	gpkg.apkg.Name = pkgName
-	for filename, file := range gpkg.apkg.Files {
+	pkg.apkg.Name = pkgName
+	for filename, file := range pkg.apkg.Files {
 		// Skip test files. They probably have concrete implementations of the
 		// type parameters, so we can't specialize them.
 		if strings.HasSuffix(filename, "_test.go") {
 			continue
 		}
-		if err := substituteFile(filename, bindings, rws, gpkg, file, pkgName); err != nil {
+		if err := substituteFile(filename, bindings, rws, pkg, file, pkgName); err != nil {
 			return err
 		}
 	}
@@ -483,10 +459,10 @@ func substitutePackage(gpkg *Package, bindings []*Binding, pkgName string) error
 }
 
 func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, pkg *Package, file *ast.File, name string) error {
-	file.Name.Name = name
 	for _, b := range bindings {
 		paramPath, _ := astutil.PathEnclosingInterval(file, b.param.Pos(), b.param.Pos())
 		if len(paramPath) < 2 {
+			// Type decl for param is not in this file.
 			continue
 		}
 		typeSpec := paramPath[1].(*ast.TypeSpec)
@@ -505,8 +481,9 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, pk
 		if !typeSpec.Assign.IsValid() {
 			typeSpec.Assign = typeSpec.Type.Pos()
 		}
-		typeSpec.Type = exprForType(b.arg)
+		typeSpec.Type = typeToExpr(b.arg)
 	}
+	file.Name.Name = name
 	if err := replaceCode(file, bindings, rewrites, pkg); err != nil {
 		return err
 	}
@@ -537,7 +514,7 @@ func importPath(s *ast.ImportSpec) string {
 }
 
 // Make an ast.Node that corresponds to the type.
-func exprForType(typ types.Type) ast.Expr {
+func typeToExpr(typ types.Type) ast.Expr {
 	switch typ := typ.(type) {
 	case *types.Named:
 		return &ast.SelectorExpr{
@@ -546,6 +523,30 @@ func exprForType(typ types.Type) ast.Expr {
 		}
 	case *types.Basic:
 		return &ast.Ident{Name: typ.Name()}
+	case *types.Slice:
+		return &ast.ArrayType{
+			Elt: typeToExpr(typ.Elem()),
+		}
+	case *types.Array:
+		return &ast.ArrayType{
+			Elt: typeToExpr(typ.Elem()),
+			Len: &ast.BasicLit{Value: strconv.FormatInt(typ.Len(), 10)},
+		}
+	case *types.Map:
+		return &ast.MapType{
+			Key:   typeToExpr(typ.Key()),
+			Value: typeToExpr(typ.Elem()),
+		}
+	case *types.Struct:
+		var fields []*ast.Field
+		for i := 0; i < typ.NumFields(); i++ {
+			f := typ.Field(i)
+			fields = append(fields, &ast.Field{
+				Names: []*ast.Ident{{Name: f.Name()}},
+				Type:  typeToExpr(f.Type()),
+			})
+		}
+		return &ast.StructType{Fields: &ast.FieldList{List: fields}}
 	default:
 		panic(fmt.Sprintf("unknown type %T", typ))
 	}
@@ -966,7 +967,8 @@ func comparableMod(t types.Type, assumeNot types.Type) bool {
 }
 
 // buildType constructs a types.Type from a string expression that should
-// denote a type. Array lengths must be literal integers.
+// denote a type. In the string, import paths with slashes must be quoted,
+// and array lengths must be literal integers.
 func buildType(s string) (types.Type, error) {
 	expr, err := parser.ParseExpr(s)
 	if err != nil {
@@ -1005,6 +1007,9 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 		k, err := exprToType(e.Key)
 		if err != nil {
 			return nil, err
+		}
+		if !types.Comparable(k) {
+			return nil, fmt.Errorf("map key type %s is not comparable", k)
 		}
 		v, err := exprToType(e.Value)
 		if err != nil {
@@ -1047,6 +1052,22 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 	default:
 		return nil, fmt.Errorf("unknown type expr %T", e)
 	}
+}
+
+func lookupNamedType(importPath, typeName string) (types.Type, error) {
+	tpkg, err := theImporter.Import(importPath)
+	if err != nil {
+		return nil, err
+	}
+	sobj := tpkg.Scope().Lookup(typeName)
+	if sobj == nil {
+		return nil, fmt.Errorf("cannot find %s in package %s", typeName, tpkg.Name())
+	}
+	stn, ok := sobj.(*types.TypeName)
+	if !ok {
+		return nil, fmt.Errorf("%s is not a named type in package %s", typeName, tpkg.Path())
+	}
+	return stn.Type(), nil
 }
 
 // Constructs an expression for the zero value of type t.

@@ -77,7 +77,7 @@ func TestBuildType(t *testing.T) {
 		{"time.Time", lookup("time", "Time")},
 		{"map[time.Time][]int", types.NewMap(lookup("time", "Time"), types.NewSlice(intType))},
 		{`"github.com/jba/gen/examples/geo".Point`, lookup("github.com/jba/gen/examples/geo", "Point")},
-		{"map[[]int]bool", types.NewMap(types.NewSlice(intType), boolType)}, // no error on non-comparable key
+		{"map[[]int]bool", nil}, // error on non-comparable key
 		{"struct{x int}", types.NewStruct([]*types.Var{types.NewField(token.NoPos, nil, "x", intType, false)}, nil)},
 		{"map[int]struct{}", types.NewMap(intType, types.NewStruct(nil, nil))},
 	} {
@@ -353,6 +353,7 @@ func TestExamples(t *testing.T) {
 		specs  []string
 	}{
 		{"stack", "intstack", []string{"T:int"}},
+		{"stack", "stringmapstack", []string{"T:map[string]bool"}},
 		{"slices", "strslices", []string{"T:string"}},
 		{"slices", "timeslices", []string{"T:time.Time"}},
 		{"maps", "pointsets", []string{"K:github.com/jba/gen/examples/geo.Point", "V:bool"}},
@@ -378,6 +379,10 @@ func TestExamples(t *testing.T) {
 
 func TestZeroExpr(t *testing.T) {
 	// TODO: test zeroExpr
+}
+
+func TestTypeToExpr(t *testing.T) {
+	// TODO: test typeToExpr
 }
 
 func Test_TypesInfo(t *testing.T) {
