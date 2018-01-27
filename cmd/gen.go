@@ -689,7 +689,7 @@ func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *P
 	// Note: Apply does not walk replacement nodes, but it does continue to walk the original node's
 	// children.
 	var err error
-	var post func(c *astutil.Cursor) bool
+	var replace func(n ast.Node)
 
 	pre := func(c *astutil.Cursor) bool {
 		if err != nil {
@@ -782,6 +782,7 @@ func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *P
 			}
 			cc := matchingCase(n.Body.List, binding.arg, pkg)
 			if cc != nil {
+				// TODO: if cc.Body is panic call, return error here.
 				if assign != nil {
 					stmts = append(stmts, &ast.AssignStmt{
 						Lhs: assign.Lhs,
@@ -794,12 +795,20 @@ func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *P
 			if len(stmts) == 0 {
 				c.Delete()
 			} else {
-				c.Replace(&ast.BlockStmt{List: stmts})
+				block := &ast.BlockStmt{List: stmts}
+				replace(block)
+				c.Replace(block)
 			}
+			return false
 		}
 		return true
 	}
-	astutil.Apply(file, pre, post)
+
+	replace = func(n ast.Node) {
+		astutil.Apply(n, pre, nil)
+	}
+
+	replace(file)
 	return err
 }
 
