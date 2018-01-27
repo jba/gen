@@ -551,7 +551,11 @@ func typeToExpr(typ types.Type, tpkg *types.Package) ast.Expr {
 				Type:  typeToExpr(f.Type(), tpkg),
 			})
 		}
-		return &ast.StructType{Fields: &ast.FieldList{List: fields}}
+		return &ast.StructType{Fields: &ast.FieldList{
+			List:    fields,
+			Opening: 1,
+			Closing: 2,
+		}}
 	default:
 		panic(fmt.Sprintf("unknown type %T", typ))
 	}
@@ -679,11 +683,7 @@ func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *P
 		case *ast.CallExpr:
 			for _, r := range rewrites {
 				if x, ok := r.match(n.Fun, pkg.info); ok {
-					c.Replace(&ast.BinaryExpr{
-						X:  x,
-						Op: r.op,
-						Y:  n.Args[0],
-					})
+					c.Replace(&ast.BinaryExpr{X: x, Op: r.op, Y: n.Args[0]})
 					break
 				}
 			}
