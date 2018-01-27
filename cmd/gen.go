@@ -14,6 +14,14 @@
 //   check correctly: map[U]int will succeed even though we are assuming T is not comparable. I guess I'll
 //   have to use the ast to recognize this case.
 
+// The init statement in a type switch can define variables which are not used in the selected
+// case. The resulting code doesn't compile because of the unused identifier. E.g.
+//		switch z := 1; x.(type) {
+//		case int: fmt.Println()
+//		case bool: fmt.Println(z)
+//		}
+// If the arg type is int, the resulting block is { z := 1; fmt.Println() }, which is invalid.
+
 // examples (for readme):
 // - container/ring
 // - jba/btree
@@ -94,6 +102,11 @@ func run(genPath, outputDir, outputName string, args []string) error {
 	if err := substitutePackage(pkg, bindings, outputName); err != nil {
 		return err
 	}
+	for _, b := range bindings {
+		if !b.found {
+			return fmt.Errorf("no type parameter %s in %s", b.param, genPath)
+		}
+	}
 	if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
 		return err
 	}
@@ -172,9 +185,7 @@ func parseBindingSpec(s string) (*BindingSpec, error) {
 	}
 	bs := &BindingSpec{param: parts[0]}
 	sub := parts[1]
-
-	i := strings.LastIndex(sub, ".")
-	switch {
+	switch i := strings.LastIndex(sub, "."); {
 	case i < 0:
 		bs.arg = sub
 	case i == 0:
@@ -192,6 +203,7 @@ func parseBindingSpec(s string) (*BindingSpec, error) {
 type Binding struct {
 	param *types.TypeName
 	arg   types.Type
+	found bool
 }
 
 func specToBinding(spec *BindingSpec, pkg *Package) (*Binding, error) {
@@ -465,6 +477,7 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, pk
 			// Type decl for param is not in this file.
 			continue
 		}
+		b.found = true
 		typeSpec := paramPath[1].(*ast.TypeSpec)
 		// Add an import for the argument type if necessary.
 		// TODO: the named type from another package might be embedded in the type, like map[int]geo.Point.
@@ -673,8 +686,11 @@ func returnStmtBlock(e ast.Expr) *ast.BlockStmt {
 }
 
 func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *Package) error {
+	// Note: Apply does not walk replacement nodes, but it does continue to walk the original node's
+	// children.
 	var err error
 	var post func(c *astutil.Cursor) bool
+
 	pre := func(c *astutil.Cursor) bool {
 		if err != nil {
 			return false
@@ -720,7 +736,8 @@ func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *P
 
 		case *ast.TypeAssertExpr:
 			if n.Type == nil {
-				panic("type switch unimp")
+				// part of type switch; handled below
+				break
 			}
 			for _, b := range bindings {
 				if !types.Identical(pkg.info.Types[n.X].Type, b.param.Type()) {
@@ -733,11 +750,76 @@ func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *P
 				c.Replace(n.X)
 				break
 			}
+
+		case *ast.TypeSwitchStmt:
+			var e ast.Expr
+			var assign *ast.AssignStmt
+			switch s := n.Assign.(type) {
+			case *ast.ExprStmt:
+				e = s.X.(*ast.TypeAssertExpr).X
+			case *ast.AssignStmt:
+				if len(s.Rhs) != 1 {
+					panic("bad assign stmt in type switch")
+				}
+				e = s.Rhs[0].(*ast.TypeAssertExpr).X
+				assign = s
+			default:
+				panic("unknown statement in type switch")
+			}
+			var binding *Binding
+			for _, b := range bindings {
+				if types.Identical(pkg.info.Types[e].Type, b.param.Type()) {
+					binding = b
+					break
+				}
+			}
+			if binding == nil {
+				break
+			}
+			var stmts []ast.Stmt
+			if n.Init != nil {
+				stmts = []ast.Stmt{n.Init}
+			}
+			cc := matchingCase(n.Body.List, binding.arg, pkg)
+			if cc != nil {
+				if assign != nil {
+					stmts = append(stmts, &ast.AssignStmt{
+						Lhs: assign.Lhs,
+						Tok: token.DEFINE,
+						Rhs: []ast.Expr{assign.Rhs[0].(*ast.TypeAssertExpr).X},
+					})
+				}
+				stmts = append(stmts, cc.Body...)
+			}
+			if len(stmts) == 0 {
+				c.Delete()
+			} else {
+				c.Replace(&ast.BlockStmt{List: stmts})
+			}
 		}
 		return true
 	}
 	astutil.Apply(file, pre, post)
 	return err
+}
+
+// Given a list of case clauses from a type swtich, return the case clause that
+// matches type t, or nil if none.
+func matchingCase(cases []ast.Stmt, t types.Type, pkg *Package) *ast.CaseClause {
+	var defaultCase *ast.CaseClause
+	for _, s := range cases {
+		cc := s.(*ast.CaseClause)
+		if cc.List == nil {
+			defaultCase = cc
+		} else {
+			for _, te := range cc.List {
+				if types.Identical(pkg.info.Types[te].Type, t) {
+					return cc
+				}
+			}
+		}
+	}
+	return defaultCase
 }
 
 func replaceTwoValueAssert(e *ast.TypeAssertExpr, bindings []*Binding, pkg *Package) []ast.Expr {
