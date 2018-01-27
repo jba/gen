@@ -92,6 +92,84 @@ func TestBuildType(t *testing.T) {
 	}
 }
 
+func TestTypeToExpr(t *testing.T) {
+	intType := types.Typ[types.Int]
+	boolType := types.Typ[types.Bool]
+	tpkg, err := theImporter.Import("github.com/jba/gen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := func(path, name string) types.Type {
+		typ, err := lookupNamedType(path, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return typ
+	}
+
+	for _, test := range []struct {
+		in   types.Type
+		want string
+	}{
+		{intType, "int"},
+		{types.NewSlice(intType), "[]int"},
+		{types.NewArray(intType, 5), "[5]int"},
+		{types.NewMap(intType, boolType), "map[int]bool"},
+		{lookup("time", "Time"), "time.Time"},
+		{types.NewMap(lookup("time", "Time"), types.NewSlice(intType)), "map[time.Time][]int"},
+		{lookup("github.com/jba/gen/examples/geo", "Point"), "geo.Point"},
+		{types.NewStruct([]*types.Var{types.NewField(token.NoPos, nil, "x", intType, false)}, nil), "struct{x int}"},
+		{types.NewMap(intType, types.NewStruct(nil, nil)), "map[int]struct{}"},
+	} {
+		got := types.ExprString(typeToExpr(test.in, tpkg))
+		if got != test.want {
+			t.Errorf("%s: got %s, want %s", test.in, got, test.want)
+		}
+	}
+}
+
+func TestZeroExpr(t *testing.T) {
+	fset := token.NewFileSet()
+	intType := types.Typ[types.Int]
+	boolType := types.Typ[types.Bool]
+	timeType, err := lookupNamedType("time", "Time")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpkg, err := theImporter.Import("github.com/jba/gen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		in   types.Type
+		want string
+	}{
+		{intType, "0"},
+		{boolType, "false"},
+		{types.Typ[types.Float32], "0"},
+		{types.Typ[types.String], `""`},
+		{types.Typ[types.Rune], "0"},
+		{timeType, "time.Time{}"},
+		{types.NewSlice(intType), "nil"},
+		{types.NewArray(intType, 5), "[5]int{}"},
+		{types.NewMap(intType, boolType), "nil"},
+		{types.NewStruct([]*types.Var{types.NewField(token.NoPos, nil, "x", intType, false)}, nil), "struct { x int}{}"},
+	} {
+		expr := zeroExpr(test.in, tpkg)
+		// types.ExprString doesn't handle array and struct literals well.
+		var buf bytes.Buffer
+		if err := printer.Fprint(&buf, fset, expr); err != nil {
+			t.Fatalf("%s: %v", test.in, err)
+		}
+		got := buf.String()
+		got = strings.Replace(got, "\n", "", -1)
+		got = strings.Replace(got, "\t", " ", -1)
+		if got != test.want {
+			t.Errorf("%s: got %q, want %q", test.in, got, test.want)
+		}
+	}
+}
+
 func TestCheckParamErrors(t *testing.T) {
 	// Test the additional checks we perform on generic parameter types. The go/types checker
 	// handles the usual interface implementation checks.
@@ -278,7 +356,7 @@ func TestReplaceCode(t *testing.T) {
 		},
 		{
 			in:   `func f(x I) { y, ok := x.(struct{}); _, _ = y, ok }`,
-			want: `func f(x I) { y, ok := struct{}{}, false; _, _ = y, ok }`,
+			want: "func f(x I) {\ny, ok := struct {\n}{}, false\n_, _ = y, ok\n}",
 		},
 		{
 			in:   `func f(x I) { type S struct{ i int }; y, ok := x.(S); _, _ = y, ok }`,
@@ -329,6 +407,8 @@ func TestReplaceCode(t *testing.T) {
 		got := buf.String()
 		if trim(got) != trim(test.want) {
 			t.Errorf("-- got --\n%s\n-- want --\n%s", got, test.want)
+			t.Logf("trim(got):  %q\n", trim(got))
+			t.Logf("trim(want): %q\n", trim(test.want))
 		}
 	}
 }
@@ -375,14 +455,6 @@ func TestExamples(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestZeroExpr(t *testing.T) {
-	// TODO: test zeroExpr
-}
-
-func TestTypeToExpr(t *testing.T) {
-	// TODO: test typeToExpr
 }
 
 func Test_TypesInfo(t *testing.T) {

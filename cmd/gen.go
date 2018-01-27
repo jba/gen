@@ -481,7 +481,7 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, pk
 		if !typeSpec.Assign.IsValid() {
 			typeSpec.Assign = typeSpec.Type.Pos()
 		}
-		typeSpec.Type = typeToExpr(b.arg)
+		typeSpec.Type = typeToExpr(b.arg, pkg.tpkg)
 	}
 	file.Name.Name = name
 	if err := replaceCode(file, bindings, rewrites, pkg); err != nil {
@@ -514,36 +514,41 @@ func importPath(s *ast.ImportSpec) string {
 }
 
 // Make an ast.Node that corresponds to the type.
-func typeToExpr(typ types.Type) ast.Expr {
+func typeToExpr(typ types.Type, tpkg *types.Package) ast.Expr {
 	switch typ := typ.(type) {
 	case *types.Named:
+		p := typ.Obj().Pkg()
+		n := typ.Obj().Name()
+		if p == tpkg {
+			return id(n)
+		}
 		return &ast.SelectorExpr{
-			X:   &ast.Ident{Name: typ.Obj().Pkg().Name()},
-			Sel: &ast.Ident{Name: typ.Obj().Name()},
+			X:   id(p.Name()),
+			Sel: id(n),
 		}
 	case *types.Basic:
-		return &ast.Ident{Name: typ.Name()}
+		return id(typ.Name())
 	case *types.Slice:
 		return &ast.ArrayType{
-			Elt: typeToExpr(typ.Elem()),
+			Elt: typeToExpr(typ.Elem(), tpkg),
 		}
 	case *types.Array:
 		return &ast.ArrayType{
-			Elt: typeToExpr(typ.Elem()),
+			Elt: typeToExpr(typ.Elem(), tpkg),
 			Len: &ast.BasicLit{Value: strconv.FormatInt(typ.Len(), 10)},
 		}
 	case *types.Map:
 		return &ast.MapType{
-			Key:   typeToExpr(typ.Key()),
-			Value: typeToExpr(typ.Elem()),
+			Key:   typeToExpr(typ.Key(), tpkg),
+			Value: typeToExpr(typ.Elem(), tpkg),
 		}
 	case *types.Struct:
 		var fields []*ast.Field
 		for i := 0; i < typ.NumFields(); i++ {
 			f := typ.Field(i)
 			fields = append(fields, &ast.Field{
-				Names: []*ast.Ident{{Name: f.Name()}},
-				Type:  typeToExpr(f.Type()),
+				Names: []*ast.Ident{id(f.Name())},
+				Type:  typeToExpr(f.Type(), tpkg),
 			})
 		}
 		return &ast.StructType{Fields: &ast.FieldList{List: fields}}
@@ -641,10 +646,6 @@ func oneArgOpFuncCall(e ast.Expr, paramName string, tok token.Token) *ast.CallEx
 		},
 		Args: []ast.Expr{e},
 	}
-}
-
-func id(name string) *ast.Ident {
-	return &ast.Ident{Name: name}
 }
 
 func funcType(fields ...*ast.Field) *ast.FuncType {
@@ -746,9 +747,9 @@ func replaceTwoValueAssert(e *ast.TypeAssertExpr, bindings []*Binding, pkg *Pack
 		}
 		etype := pkg.info.Types[e.Type].Type
 		if types.Identical(etype, b.arg) {
-			return []ast.Expr{e.X, lit("true")}
+			return []ast.Expr{e.X, id("true")}
 		} else {
-			return []ast.Expr{zeroExpr(etype), lit("false")}
+			return []ast.Expr{zeroExpr(etype, pkg.tpkg), id("false")}
 		}
 	}
 	return []ast.Expr{e}
@@ -1071,33 +1072,33 @@ func lookupNamedType(importPath, typeName string) (types.Type, error) {
 }
 
 // Constructs an expression for the zero value of type t.
-func zeroExpr(t types.Type) ast.Expr {
+func zeroExpr(t types.Type, tpkg *types.Package) ast.Expr {
 	if nt, ok := t.(*types.Named); ok {
 		if _, ok := t.Underlying().(*types.Struct); ok {
-			return &ast.CompositeLit{Type: lit(nt.Obj().Name())}
+			return &ast.CompositeLit{Type: typeToExpr(nt, tpkg)}
 		}
 	}
 	switch t := t.Underlying().(type) {
 	case *types.Basic:
 		switch {
 		case t.Info()&types.IsBoolean != 0:
-			return lit("false")
+			return id("false")
 		case t.Info()&types.IsNumeric != 0:
-			return lit("0")
+			return lit(token.INT, "0")
 		case t.Info()&types.IsString != 0:
-			return lit(`""`)
+			return lit(token.STRING, `""`)
 		default:
 			panic("bad basic type")
 		}
 	case *types.Pointer, *types.Interface, *types.Chan, *types.Slice, *types.Signature, *types.Map:
-		return lit("nil")
+		return id("nil")
 	case *types.Struct:
-		return &ast.CompositeLit{Type: lit(t.String())}
+		return &ast.CompositeLit{Type: typeToExpr(t, tpkg)}
 	case *types.Array:
 		return &ast.CompositeLit{
 			Type: &ast.ArrayType{
-				Len: lit(strconv.Itoa(int(t.Len()))),
-				Elt: lit(t.Elem().String()),
+				Len: lit(token.INT, strconv.Itoa(int(t.Len()))),
+				Elt: typeToExpr(t.Elem(), tpkg),
 			},
 		}
 	default:
@@ -1105,6 +1106,10 @@ func zeroExpr(t types.Type) ast.Expr {
 	}
 }
 
-func lit(s string) *ast.BasicLit {
-	return &ast.BasicLit{Value: s}
+func lit(kind token.Token, s string) *ast.BasicLit {
+	return &ast.BasicLit{Kind: kind, Value: s}
+}
+
+func id(name string) *ast.Ident {
+	return &ast.Ident{Name: name}
 }
