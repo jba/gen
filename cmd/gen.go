@@ -950,10 +950,12 @@ func needsNillable(n ast.Node, match func(types.Type) bool, typeOf func(ast.Expr
 		}
 
 	case *ast.CallExpr:
-		sig := typeOf(n.Fun).(*types.Signature)
-		for i, arg := range n.Args {
-			if isNil(typeOf(arg)) && match(sig.Params().At(i).Type()) {
-				return true
+		sig, ok := typeOf(n.Fun).(*types.Signature)
+		if ok {
+			for i, arg := range n.Args {
+				if isNil(typeOf(arg)) && match(sig.Params().At(i).Type()) {
+					return true
+				}
 			}
 		}
 

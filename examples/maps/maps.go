@@ -20,6 +20,12 @@ func Clone(m map[K]V) map[K]V {
 	return r
 }
 
+func Clear(m map[K]V) {
+	for k := range m {
+		delete(m, k)
+	}
+}
+
 func Keys(m map[K]V) []K {
 	if m == nil {
 		return nil
@@ -31,6 +37,8 @@ func Keys(m map[K]V) []K {
 	return ks
 }
 
+// Union adds all the entries from src to dest and returns dest. If a key is in dest,
+// its value is overwritten with the value from src.
 func Union(dest, src map[K]V) map[K]V {
 	for k, v := range src {
 		dest[k] = v
@@ -38,6 +46,7 @@ func Union(dest, src map[K]V) map[K]V {
 	return dest
 }
 
+// Difference removes all of src's keys from dest and returns dest.
 func Difference(dest, src map[K]V) map[K]V {
 	for k := range src {
 		delete(dest, k)
@@ -45,6 +54,8 @@ func Difference(dest, src map[K]V) map[K]V {
 	return dest
 }
 
+// Intersection keeps the keys in dest that are also in src, removing the others.
+// It returns dest.
 func Intersection(dest, src map[K]V) map[K]V {
 	for k := range dest {
 		if _, ok := src[k]; !ok {

@@ -520,8 +520,8 @@ func TestExamples(t *testing.T) {
 		{"slices", "timeslices", []string{"T:time.Time"}},
 		{"maps", "pointsets", []string{"K:github.com/jba/gen/examples/geo.Point", "V:bool"}},
 		{"ranges", "intranges", []string{"T:int"}},
-		// TODO: {"ranges", "floatranges", []string{"T:float64"}},
-		// TODO: ranges for something that implements Plus and Less.
+		{"ranges", "floatranges", []string{"T:float64"}},
+		// TODO: ranges for the Int type in ranges_test.go (put it in another package)
 	} {
 		t.Run(test.outPkg, func(t *testing.T) {
 			err := run(filepath.Join("github.com/jba/gen/examples", test.dir), "/tmp", test.outPkg, test.specs)

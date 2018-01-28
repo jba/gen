@@ -21,6 +21,12 @@ func Clone(m map[K]V) map[K]V {
 	return r
 }
 
+func Clear(m map[K]V) {
+	for k := range m {
+		delete(m, k)
+	}
+}
+
 func Keys(m map[K]V) []K {
 	if m == nil {
 		return nil
