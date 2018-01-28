@@ -214,7 +214,7 @@ func specToBinding(spec *BindingSpec, pkg *Package) (*Binding, error) {
 	if err := checkParam(gtn, pkg); err != nil {
 		return nil, fmt.Errorf("%s: %v", pkg.fset.Position(gtn.Pos()), err)
 	}
-	atype, err := buildType(spec.arg)
+	atype, err := buildType(spec.arg, lookupBuiltinName)
 	if err != nil {
 		return nil, err
 	}
@@ -1061,21 +1061,29 @@ func comparableMod(t types.Type, assumeNot types.Type) bool {
 // buildType constructs a types.Type from a string expression that should
 // denote a type. In the string, import paths with slashes must be quoted,
 // and array lengths must be literal integers.
-func buildType(s string) (types.Type, error) {
+// lookupName returns the type for an unqualified name.
+func buildType(s string, lookupName func(string) types.Type) (types.Type, error) {
 	expr, err := parser.ParseExpr(s)
 	if err != nil {
 		return nil, err
 	}
-	return exprToType(expr)
+	return exprToType(expr, lookupName)
 }
 
-func exprToType(expr ast.Expr) (types.Type, error) {
+func lookupBuiltinName(name string) types.Type {
+	for _, b := range types.Typ {
+		if b.Name() == name && b.Kind() != types.UnsafePointer && b.Info()&types.IsUntyped == 0 {
+			return b
+		}
+	}
+	return nil
+}
+
+func exprToType(expr ast.Expr, lookupName func(string) types.Type) (types.Type, error) {
 	switch e := expr.(type) {
 	case *ast.Ident:
-		for _, b := range types.Typ {
-			if b.Name() == e.Name && b.Kind() != types.UnsafePointer && b.Info()&types.IsUntyped == 0 {
-				return b, nil
-			}
+		if t := lookupName(e.Name); t != nil {
+			return t, nil
 		}
 		return nil, fmt.Errorf("unknown type name %s", e.Name)
 
@@ -1096,21 +1104,21 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 		return lookupNamedType(importPath, e.Sel.Name)
 
 	case *ast.MapType:
-		k, err := exprToType(e.Key)
+		k, err := exprToType(e.Key, lookupName)
 		if err != nil {
 			return nil, err
 		}
 		if !types.Comparable(k) {
 			return nil, fmt.Errorf("map key type %s is not comparable", k)
 		}
-		v, err := exprToType(e.Value)
+		v, err := exprToType(e.Value, lookupName)
 		if err != nil {
 			return nil, err
 		}
 		return types.NewMap(k, v), nil
 
 	case *ast.ArrayType:
-		elType, err := exprToType(e.Elt)
+		elType, err := exprToType(e.Elt, lookupName)
 		if err != nil {
 			return nil, err
 		}
@@ -1131,7 +1139,7 @@ func exprToType(expr ast.Expr) (types.Type, error) {
 	case *ast.StructType:
 		var fields []*types.Var
 		for _, f := range e.Fields.List {
-			ft, err := exprToType(f.Type)
+			ft, err := exprToType(f.Type, lookupName)
 			if err != nil {
 				return nil, err
 			}

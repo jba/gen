@@ -81,7 +81,7 @@ func TestBuildType(t *testing.T) {
 		{"struct{x int}", types.NewStruct([]*types.Var{types.NewField(token.NoPos, nil, "x", intType, false)}, nil)},
 		{"map[int]struct{}", types.NewMap(intType, types.NewStruct(nil, nil))},
 	} {
-		got, err := buildType(test.in)
+		got, err := buildType(test.in, lookupBuiltinName)
 		if err != nil && test.want != nil {
 			t.Errorf(`%s: got "%v", want %s`, test.in, err, test.want)
 		} else if err == nil && test.want == nil {
@@ -238,7 +238,7 @@ func TestCheckBinding(t *testing.T) {
 		code := `package p; import "github.com/jba/gen";` + test.ptypeDecl
 		pkg := packageFromSource(code)
 		ptype := topLevelType("T", pkg)
-		atype, err := buildType(test.atypeExpr)
+		atype, err := buildType(test.atypeExpr, lookupBuiltinName)
 		if err != nil {
 			t.Fatal(err)
 		}
