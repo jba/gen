@@ -80,24 +80,57 @@ func requireFlag(flag, val string) {
 }
 
 func run(genPath, outputDir, outputName string, args []string) error {
-	pkg, err := loadPackage(genPath)
+	// Parse the bindings, and build the arg types.
+	if len(args) == 0 {
+		return errors.New("need bindings")
+	}
+	argTypeMap := map[string]types.Type{}
+	for _, arg := range args {
+		spec, err := parseBindingSpec(arg)
+		if err != nil {
+			return err
+		}
+		atype, err := buildType(spec.arg, lookupBuiltinName)
+		if err != nil {
+			return err
+		}
+		argTypeMap[spec.param] = atype
+	}
+
+	// Parse the generic package.
+	fset := token.NewFileSet()
+	apkg, err := astPackageFromPath(fset, genPath)
+	if err != nil {
+		return err
+	}
+	// Handle import directives by recursively instantiating the types.
+	importDirectives, err := parseDirectives(apkg)
+	if err != nil {
+		return err
+	}
+	if len(importDirectives) > 0 {
+		err := processImportDirectives(importDirectives, fset, apkg, argTypeMap)
+		if err != nil {
+			return err
+		}
+		// We changed the AST, so the fset will be wrong. Reload.
+		fset, apkg, err = reloadAST(fset, apkg)
+		if err != nil {
+			return err
+		}
+	}
+	// Typecheck the package.
+	pkg, err := makePackage(fset, genPath, apkg)
 	if err != nil {
 		return err
 	}
 	var bindings []*Binding
-	for _, arg := range args {
-		bs, err := parseBindingSpec(arg)
-		if err != nil {
-			return err
-		}
-		b, err := specToBinding(bs, pkg)
+	for param, argType := range argTypeMap {
+		b, err := newBinding(param, argType, pkg)
 		if err != nil {
 			return err
 		}
 		bindings = append(bindings, b)
-	}
-	if len(bindings) == 0 {
-		return errors.New("need bindings")
 	}
 	if err := substitutePackage(pkg, bindings, outputName); err != nil {
 		return err
@@ -206,25 +239,20 @@ type Binding struct {
 	found bool
 }
 
-func specToBinding(spec *BindingSpec, pkg *Package) (*Binding, error) {
-	gtn, err := pkg.topLevelTypeName(spec.param)
+func newBinding(paramName string, argType types.Type, pkg *Package) (*Binding, error) {
+	gtn, err := pkg.topLevelTypeName(paramName)
 	if err != nil {
 		return nil, err
 	}
 	if err := checkParam(gtn, pkg); err != nil {
 		return nil, fmt.Errorf("%s: %v", pkg.fset.Position(gtn.Pos()), err)
 	}
-	atype, err := buildType(spec.arg, lookupBuiltinName)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkBinding(gtn.Type(), atype); err != nil {
+	if err := checkBinding(gtn.Type(), argType); err != nil {
 		return nil, fmt.Errorf("%s: %v", pkg.fset.Position(gtn.Pos()), err)
 	}
-
 	return &Binding{
 		param: gtn,
-		arg:   atype,
+		arg:   argType,
 	}, nil
 }
 
@@ -385,7 +413,7 @@ func (p *Package) topLevelTypeName(name string) (*types.TypeName, error) {
 	return gtn, nil
 }
 
-func loadPackage(ipath string) (*Package, error) {
+func astPackageFromPath(fset *token.FileSet, ipath string) (*ast.Package, error) {
 	pwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -395,12 +423,7 @@ func loadPackage(ipath string) (*Package, error) {
 		return nil, err
 	}
 	dir := bpkg.Dir
-	fset := token.NewFileSet()
-	apkg, err := astPackageFromDir(fset, dir)
-	if err != nil {
-		return nil, err
-	}
-	return makePackage(fset, ipath, apkg)
+	return astPackageFromDir(fset, dir)
 }
 
 func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package, error) {
@@ -425,7 +448,7 @@ func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package
 }
 
 func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
-	pkgs, err := parser.ParseDir(fset, dir, nil, 0)
+	pkgs, err := parser.ParseDir(fset, dir, nil, parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
@@ -442,6 +465,61 @@ func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
 		}
 		return apkg, nil
 	}
+}
+
+type importDirective struct {
+	name         string
+	path         string
+	bindingSpecs []string
+}
+
+func parseDirectives(p *ast.Package) ([]importDirective, error) {
+	var ids []importDirective
+	ds := directiveLines(p)
+	for _, d := range ds {
+		// TODO: handle spaces in import path
+		fields := strings.Fields(d)
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[0] != "gen:import" {
+			return nil, fmt.Errorf("unknown directive %q", d)
+		}
+		if len(fields) < 4 {
+			return nil, fmt.Errorf("malformed directive %q. want: name path bindings...", d)
+		}
+		if fields[2][0] == '"' {
+			var err error
+			fields[2], err = strconv.Unquote(fields[2])
+			if err != nil {
+				return nil, err
+			}
+		}
+		ids = append(ids, importDirective{
+			name:         fields[1],
+			path:         fields[2],
+			bindingSpecs: fields[3:],
+		})
+	}
+	return ids, nil
+}
+
+func directiveLines(p *ast.Package) []string {
+	var dirs []string
+	for _, file := range p.Files {
+		for _, cg := range file.Comments {
+			for _, c := range cg.List {
+				lines := strings.Split(c.Text, "\n")
+				for _, line := range lines {
+					line = strings.Trim(line, "/* \t")
+					if strings.HasPrefix(line, "gen:") {
+						dirs = append(dirs, line)
+					}
+				}
+			}
+		}
+	}
+	return dirs
 }
 
 // Modifies the asts in pkg. pkgName is the new package name.
@@ -1058,6 +1136,14 @@ func comparableMod(t types.Type, assumeNot types.Type) bool {
 		return comparableMod(t.Elem(), assumeNot)
 	}
 	return false
+}
+
+func processImportDirectives(ids []importDirective, fset *token.FileSet, apkg *ast.Package, bindings map[string]types.Type) error {
+	panic("unimp")
+}
+
+func reloadAST(fset *token.FileSet, apkg *ast.Package) (*token.FileSet, *ast.Package, error) {
+	panic("unimp")
 }
 
 // buildType constructs a types.Type from a string expression that should

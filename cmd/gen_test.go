@@ -26,6 +26,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestComparableMod(t *testing.T) {
@@ -542,6 +544,66 @@ func TestExamples(t *testing.T) {
 	}
 }
 
+func TestDirectiveLines(t *testing.T) {
+	for i, test := range []struct {
+		src  string
+		want []string
+	}{
+		{`
+package p
+// gen:import x
+import "fmt"
+`,
+			[]string{"gen:import x"},
+		},
+		{`
+package p
+import (
+	"fmt"
+
+    // gen:import x
+)
+`,
+			[]string{"gen:import x"},
+		},
+		{`
+package p
+import (
+	"fmt"
+	"math"
+
+	/*
+	   gen:import x
+       gen:import y
+	*/
+	"github.com/jba/gen/examples/maps"
+	"golang.org/x/net/context"
+)
+`,
+			[]string{`gen:import x`, `gen:import y`},
+		},
+	} {
+		fset := token.NewFileSet()
+		apkg, err := astPackage(fset, "<src>", test.src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := directiveLines(apkg)
+		if !cmp.Equal(got, test.want) {
+			t.Errorf("%d: got %v, want %v", i, got, test.want)
+		}
+	}
+}
+
+func TestNested(t *testing.T) {
+	fset := token.NewFileSet()
+	apkg, err := astPackageFromDir(fset, "../examples/nested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ast.Print(fset, apkg)
+}
+
 func Test_TypesInfo(t *testing.T) {
 	t.SkipNow()
 	// Learn about how the go/types package works.
@@ -612,7 +674,7 @@ func packageFromSource(src string) *Package {
 // }
 
 func astPackage(fset *token.FileSet, filename string, src interface{}) (*ast.Package, error) {
-	file, err := parser.ParseFile(fset, filename, src, 0)
+	file, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
