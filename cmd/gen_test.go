@@ -21,6 +21,7 @@ import (
 	"go/types"
 	"io/ioutil"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -236,6 +237,7 @@ func TestCheckBinding(t *testing.T) {
 		{nil, "type T interface { Equal(T) bool }", "int"}, // by augmentation
 		{nil, "type T interface { gen.Comparable }", "int"},
 		{missingMethodError(""), "type T interface { M() }", "int"},
+		// TODO: test nillable
 	} {
 		code := `package p; import "github.com/jba/gen";` + test.ptypeDecl
 		pkg := packageFromSource(code)
@@ -259,6 +261,14 @@ func topLevelType(name string, pkg *Package) types.Type {
 		log.Fatal(err)
 	}
 	return tn.Type()
+}
+
+func TestDirToImportPath(t *testing.T) {
+	got := dirToImportPath(os.Getenv("HOME") + "/go/src/github.com/jba")
+	want := "github.com/jba"
+	if got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
 }
 
 func TestReplaceCode(t *testing.T) {
@@ -456,11 +466,7 @@ func TestReplaceCode(t *testing.T) {
 			type I interface{}
 	    ` + test.in
 		pkg := packageFromSource(code)
-		var file *ast.File
-		for _, f := range pkg.apkg.Files {
-			file = f
-			break
-		}
+		file := singleFile(pkg.apkg)
 		ptype := topLevelType("T", pkg)
 		var rewrites []rewrite
 		for _, am := range append([]augmentMethod{equalMethod}, orderedMethods...) {
@@ -489,6 +495,13 @@ func TestReplaceCode(t *testing.T) {
 	}
 }
 
+func singleFile(apkg *ast.Package) *ast.File {
+	for _, f := range apkg.Files {
+		return f
+	}
+	return nil
+}
+
 func nodeString(n interface{}, fset *token.FileSet) string {
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, n); err != nil {
@@ -511,27 +524,32 @@ func trim(s string) string {
 
 func TestExamples(t *testing.T) {
 	log.SetOutput(ioutil.Discard)
+	outputDir := fmt.Sprintf("%s/src/github.com/jba/gen/tmp.gitignore", os.Getenv("GOPATH"))
+	if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		dir    string
 		outPkg string
 		specs  []string
 	}{
-		{"stack", "intstack", []string{"T:int"}},
-		{"stack", "stringmapstack", []string{"T:map[string]bool"}},
-		{"slices", "strslices", []string{"T:string"}},
-		{"slices", "timeslices", []string{"T:time.Time"}},
-		{"maps", "pointsets", []string{"K:github.com/jba/gen/examples/geo.Point", "V:bool"}},
-		{"ranges", "intranges", []string{"T:int"}},
-		{"ranges", "floatranges", []string{"T:float64"}},
+		// {"stack", "intstack", []string{"T:int"}},
+		// {"stack", "stringmapstack", []string{"T:map[string]bool"}},
+		// {"slices", "strslices", []string{"T:string"}},
+		// {"slices", "timeslices", []string{"T:time.Time"}},
+		// {"maps", "pointsets", []string{"K:github.com/jba/gen/examples/geo.Point", "V:bool"}},
+		// {"ranges", "intranges", []string{"T:int"}},
+		// {"ranges", "floatranges", []string{"T:float64"}},
 		// TODO: ranges for the Int type in ranges_test.go (put it in another package)
+		{"nested", "intnested", []string{"T:int"}},
 	} {
 		t.Run(test.outPkg, func(t *testing.T) {
-			err := run(filepath.Join("github.com/jba/gen/examples", test.dir), "/tmp", test.outPkg, test.specs)
+			err := run(filepath.Join("github.com/jba/gen/examples", test.dir), outputDir, test.outPkg, test.specs)
 			if err != nil {
 				t.Fatal(err)
 			}
 			cmd := exec.Command("diff", "-u",
-				filepath.Join("../testdata/want", test.outPkg), filepath.Join("/tmp", test.outPkg))
+				filepath.Join("../testdata/want", test.outPkg), filepath.Join(outputDir, test.outPkg))
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Log(string(out))
@@ -541,6 +559,29 @@ func TestExamples(t *testing.T) {
 				t.Error(string(out))
 			}
 		})
+	}
+}
+
+func TestReloadAST(t *testing.T) {
+	fset := token.NewFileSet()
+	apkg, err := astPackageFromPath(fset, "github.com/jba/gen/examples/nested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range apkg.Files {
+		if pos := file.Pos(); pos.IsValid() {
+			fmt.Println(fset.File(pos).Name())
+		}
+	}
+
+	fset2, apkg2, err := reloadAST(fset, apkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range apkg2.Files {
+		if pos := file.Pos(); pos.IsValid() {
+			fmt.Println(fset2.File(pos).Name())
+		}
 	}
 }
 
@@ -588,7 +629,7 @@ import (
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := directiveLines(apkg)
+		got := directiveLines(singleFile(apkg))
 		if !cmp.Equal(got, test.want) {
 			t.Errorf("%d: got %v, want %v", i, got, test.want)
 		}
@@ -601,7 +642,8 @@ func TestNested(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ast.Print(fset, apkg)
+	_ = apkg
+	//ast.Print(fset, apkg)
 }
 
 func Test_TypesInfo(t *testing.T) {

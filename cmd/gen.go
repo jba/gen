@@ -33,6 +33,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -84,19 +85,32 @@ func run(genPath, outputDir, outputName string, args []string) error {
 	if len(args) == 0 {
 		return errors.New("need bindings")
 	}
-	argTypeMap := map[string]types.Type{}
-	for _, arg := range args {
-		spec, err := parseBindingSpec(arg)
-		if err != nil {
-			return err
-		}
-		atype, err := buildType(spec.arg, lookupBuiltinName)
-		if err != nil {
-			return err
-		}
-		argTypeMap[spec.param] = atype
+	argTypeMap, err := makeBindingMap(args, lookupBuiltinName)
+	if err != nil {
+		return err
 	}
+	return runWithBindings(genPath, outputDir, outputName, argTypeMap)
+}
 
+func makeBindingMap(args []string, lookup func(string) types.Type) (map[string]types.Type, error) {
+	m := map[string]types.Type{}
+	for _, arg := range args {
+		param, arg, err := parseBindingSpec(arg)
+		if err != nil {
+			return nil, err
+		}
+		atype, err := buildType(arg, lookup)
+		if err != nil {
+			return nil, err
+		}
+		m[param] = atype
+	}
+	return m, nil
+}
+
+func runWithBindings(genPath, outputDir, outputName string, bindingMap map[string]types.Type) error {
+	fmt.Printf("runWithBindings genPath=%s, outputDir=%s, outputName=%s\n",
+		genPath, outputDir, outputName)
 	// Parse the generic package.
 	fset := token.NewFileSet()
 	apkg, err := astPackageFromPath(fset, genPath)
@@ -109,7 +123,7 @@ func run(genPath, outputDir, outputName string, args []string) error {
 		return err
 	}
 	if len(importDirectives) > 0 {
-		err := processImportDirectives(importDirectives, fset, apkg, argTypeMap)
+		err := processImportDirectives(outputDir, importDirectives, fset, bindingMap)
 		if err != nil {
 			return err
 		}
@@ -125,7 +139,7 @@ func run(genPath, outputDir, outputName string, args []string) error {
 		return err
 	}
 	var bindings []*Binding
-	for param, argType := range argTypeMap {
+	for param, argType := range bindingMap {
 		b, err := newBinding(param, argType, pkg)
 		if err != nil {
 			return err
@@ -204,33 +218,28 @@ var theImporter = compiledThenSourceImporter{
 
 var typecheck = (&types.Config{Importer: theImporter, DisableUnusedImportCheck: true}).Check
 
-type BindingSpec struct {
-	param string
-	arg   string
-}
-
 // An arg looks like
 //    param:type
-func parseBindingSpec(s string) (*BindingSpec, error) {
+func parseBindingSpec(s string) (param, arg string, err error) {
 	parts := strings.Split(s, ":")
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("bad spec %q", s)
+		return "", "", fmt.Errorf("bad spec %q", s)
 	}
-	bs := &BindingSpec{param: parts[0]}
+	param = parts[0]
 	sub := parts[1]
 	switch i := strings.LastIndex(sub, "."); {
 	case i < 0:
-		bs.arg = sub
+		arg = sub
 	case i == 0:
-		return nil, fmt.Errorf("empty import path in spec %q", s)
+		return "", "", fmt.Errorf("empty import path in spec %q", s)
 	default:
 		path, name := sub[:i], sub[i+1:]
 		if path[0] != '"' {
 			path = strconv.Quote(path)
 		}
-		bs.arg = path + "." + name
+		arg = path + "." + name
 	}
-	return bs, nil
+	return param, arg, nil
 }
 
 type Binding struct {
@@ -319,9 +328,9 @@ func checkBinding(ptype, atype types.Type) error {
 	if implementsSpecialInterface(putype, "Comparable") && !types.Comparable(atype) {
 		return needsComparableError(fmt.Sprintf("%s is not comparable but %s requires it", atype, ptype))
 	}
-	// if implementsSpecialInterface(putype, "Nillable") && !hasNil(atype) {
-	// 	return needsNillableError(fmt.Sprintf("%s is not nillable but %s requires it", atype, ptype))
-	// }
+	if implementsSpecialInterface(putype, "Nillable") && !hasNil(atype) {
+		return needsNillableError(fmt.Sprintf("%s is not nillable but %s requires it", atype, ptype))
+	}
 	return nil
 }
 
@@ -422,8 +431,7 @@ func astPackageFromPath(fset *token.FileSet, ipath string) (*ast.Package, error)
 	if err != nil {
 		return nil, err
 	}
-	dir := bpkg.Dir
-	return astPackageFromDir(fset, dir)
+	return astPackageFromDir(fset, bpkg.Dir)
 }
 
 func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package, error) {
@@ -437,6 +445,7 @@ func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package
 	}
 	tpkg, err := typecheck(ipath, fset, files, info)
 	if err != nil {
+		fmt.Printf("typechecker on %s: %v", ipath, err)
 		return nil, err
 	}
 	return &Package{
@@ -471,50 +480,51 @@ type importDirective struct {
 	name         string
 	path         string
 	bindingSpecs []string
+	file         *ast.File
 }
 
 func parseDirectives(p *ast.Package) ([]importDirective, error) {
 	var ids []importDirective
-	ds := directiveLines(p)
-	for _, d := range ds {
-		// TODO: handle spaces in import path
-		fields := strings.Fields(d)
-		if len(fields) == 0 {
-			continue
-		}
-		if fields[0] != "gen:import" {
-			return nil, fmt.Errorf("unknown directive %q", d)
-		}
-		if len(fields) < 4 {
-			return nil, fmt.Errorf("malformed directive %q. want: name path bindings...", d)
-		}
-		if fields[2][0] == '"' {
-			var err error
-			fields[2], err = strconv.Unquote(fields[2])
-			if err != nil {
-				return nil, err
+	for _, file := range p.Files {
+		for _, d := range directiveLines(file) {
+			// TODO: handle spaces in import path
+			fields := strings.Fields(d)
+			if len(fields) == 0 {
+				continue
 			}
+			if fields[0] != "gen:import" {
+				return nil, fmt.Errorf("unknown directive %q", d)
+			}
+			if len(fields) < 4 {
+				return nil, fmt.Errorf("malformed directive %q. want: name path bindings...", d)
+			}
+			if fields[2][0] == '"' {
+				var err error
+				fields[2], err = strconv.Unquote(fields[2])
+				if err != nil {
+					return nil, err
+				}
+			}
+			ids = append(ids, importDirective{
+				name:         fields[1],
+				path:         fields[2],
+				bindingSpecs: fields[3:],
+				file:         file,
+			})
 		}
-		ids = append(ids, importDirective{
-			name:         fields[1],
-			path:         fields[2],
-			bindingSpecs: fields[3:],
-		})
 	}
 	return ids, nil
 }
 
-func directiveLines(p *ast.Package) []string {
+func directiveLines(file *ast.File) []string {
 	var dirs []string
-	for _, file := range p.Files {
-		for _, cg := range file.Comments {
-			for _, c := range cg.List {
-				lines := strings.Split(c.Text, "\n")
-				for _, line := range lines {
-					line = strings.Trim(line, "/* \t")
-					if strings.HasPrefix(line, "gen:") {
-						dirs = append(dirs, line)
-					}
+	for _, cg := range file.Comments {
+		for _, c := range cg.List {
+			lines := strings.Split(c.Text, "\n")
+			for _, line := range lines {
+				line = strings.Trim(line, "/* \t")
+				if strings.HasPrefix(line, "gen:") {
+					dirs = append(dirs, line)
 				}
 			}
 		}
@@ -1138,12 +1148,71 @@ func comparableMod(t types.Type, assumeNot types.Type) bool {
 	return false
 }
 
-func processImportDirectives(ids []importDirective, fset *token.FileSet, apkg *ast.Package, bindings map[string]types.Type) error {
-	panic("unimp")
+func processImportDirectives(outputDir string, ids []importDirective, fset *token.FileSet, bindings map[string]types.Type) error {
+	ipath := dirToImportPath(outputDir)
+	if ipath == "" {
+		return fmt.Errorf("cannot map directory %s to an import path", outputDir)
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		key := id.name + ";" + id.path
+		if !seen[key] {
+			seen[key] = true
+			bindings2, err := makeBindingMap(id.bindingSpecs, func(name string) types.Type {
+				if t := bindings[name]; t != nil {
+					return t
+				}
+				return lookupBuiltinName(name)
+			})
+			if err != nil {
+				return err
+			}
+			if err := runWithBindings(id.path, outputDir, id.name, bindings2); err != nil {
+				return err
+			}
+		}
+		if err := instantiateImportPaths(fset, id.file, id.name, id.path, ipath+"/"+id.name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dirToImportPath(dir string) string {
+	// TODO(jba): make more robust?
+	for _, gp := range strings.Split(os.Getenv("GOPATH"), ":") {
+		p := gp + "/src/"
+		if strings.HasPrefix(dir, p) {
+			return dir[len(p):]
+		}
+	}
+	return ""
+}
+
+func instantiateImportPaths(fset *token.FileSet, file *ast.File, name, gpath, ipath string) error {
+	astutil.DeleteImport(fset, file, gpath)
+	astutil.AddNamedImport(fset, file, name, ipath)
+	return nil
 }
 
 func reloadAST(fset *token.FileSet, apkg *ast.Package) (*token.FileSet, *ast.Package, error) {
-	panic("unimp")
+	fset2 := token.NewFileSet()
+	apkg2 := &ast.Package{
+		Name:  apkg.Name,
+		Files: make(map[string]*ast.File),
+	}
+	for filename, file := range apkg.Files {
+		var buf bytes.Buffer
+		if err := format.Node(&buf, fset, file); err != nil {
+			return nil, nil, err
+		}
+		file2, err := parser.ParseFile(fset2, filename, &buf, parser.ParseComments)
+		if err != nil {
+			return nil, nil, err
+		}
+		apkg2.Files[filename] = file2
+	}
+	return fset2, apkg2, nil
 }
 
 // buildType constructs a types.Type from a string expression that should
