@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/jba/gen/tmp.gitignore/boolmaps"
-
-	// gen:import boolmaps "github.com/jba/gen/examples/maps" K:T V:bool
+	boolmaps "github.com/jba/gen/examples/maps" // gen:import K:T V:bool
 
 	"golang.org/x/net/context"
 )

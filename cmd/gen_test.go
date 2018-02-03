@@ -643,7 +643,7 @@ func TestNested(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = apkg
-	//ast.Print(fset, apkg)
+	ast.Print(fset, apkg)
 }
 
 func Test_TypesInfo(t *testing.T) {

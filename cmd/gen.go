@@ -434,6 +434,26 @@ func astPackageFromPath(fset *token.FileSet, ipath string) (*ast.Package, error)
 	return astPackageFromDir(fset, bpkg.Dir)
 }
 
+func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
+	pkgs, err := parser.ParseDir(fset, dir, nil, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+	if len(pkgs) == 1 {
+		for _, p := range pkgs {
+			return p, nil
+		}
+		panic("impossible")
+	} else {
+		pkgName := filepath.Base(dir)
+		apkg := pkgs[pkgName]
+		if apkg == nil {
+			return nil, fmt.Errorf("can't find package %q in directory %q", pkgName, dir)
+		}
+		return apkg, nil
+	}
+}
+
 func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package, error) {
 	var files []*ast.File
 	for _, file := range apkg.Files {
@@ -454,26 +474,6 @@ func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package
 		tpkg: tpkg,
 		info: info,
 	}, nil
-}
-
-func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
-	pkgs, err := parser.ParseDir(fset, dir, nil, parser.ParseComments)
-	if err != nil {
-		return nil, err
-	}
-	if len(pkgs) == 1 {
-		for _, p := range pkgs {
-			return p, nil
-		}
-		panic("impossible")
-	} else {
-		pkgName := filepath.Base(dir)
-		apkg := pkgs[pkgName]
-		if apkg == nil {
-			return nil, fmt.Errorf("can't find package %q in directory %q", pkgName, dir)
-		}
-		return apkg, nil
-	}
 }
 
 type importDirective struct {
