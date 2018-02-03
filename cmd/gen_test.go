@@ -585,19 +585,23 @@ func TestReloadAST(t *testing.T) {
 	}
 }
 
-func TestDirectiveLines(t *testing.T) {
+func TestParseDirectives(t *testing.T) {
 	for i, test := range []struct {
-		src  string
-		want []string
+		src     string
+		want    *importDirective // nil if none
+		wantErr bool
 	}{
-		{`
+		{
+			src: `
 package p
-// gen:import x
+
+// gen:import x:1
 import "fmt"
 `,
-			[]string{"gen:import x"},
+			wantErr: true,
 		},
-		{`
+		{
+			src: `
 package p
 import (
 	"fmt"
@@ -605,9 +609,9 @@ import (
     // gen:import x
 )
 `,
-			[]string{"gen:import x"},
 		},
-		{`
+		{
+			src: `
 package p
 import (
 	"fmt"
@@ -621,16 +625,79 @@ import (
 	"golang.org/x/net/context"
 )
 `,
-			[]string{`gen:import x`, `gen:import y`},
+			wantErr: true,
 		},
-	} {
+		{
+			src: `
+package p
+
+import foo "bar" // gen:import X:Y
+`,
+			want: &importDirective{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+		},
+		{
+			src: `
+package p
+
+// gen:import X:Y
+import foo "bar"
+`,
+			want: &importDirective{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+		},
+		{
+			src: `
+package p
+
+
+import (
+	"fmt"
+	foo "bar" // gen:import X:Y
+)
+`,
+			want: &importDirective{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+		},
+		{
+			src: `
+package p
+
+
+import (
+	"fmt"
+
+	// gen:import X:Y
+	foo "bar"
+)
+`,
+			want: &importDirective{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+		}} {
 		fset := token.NewFileSet()
 		apkg, err := astPackage(fset, "<src>", test.src)
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := directiveLines(singleFile(apkg))
-		if !cmp.Equal(got, test.want) {
+		ids, err := parseDirectives(fset, apkg)
+		if err != nil {
+			if !test.wantErr {
+				t.Fatalf("%d: %v", i, err)
+			}
+			continue
+		}
+		if test.wantErr {
+			t.Errorf("%d: got no error, wanted one", i)
+		}
+		if len(ids) == 0 {
+			if test.want != nil {
+				t.Errorf("%d: got none, wanted one", i)
+			}
+			continue
+		}
+		if len(ids) > 1 {
+			t.Errorf("%d: got > 1 directive", i)
+			continue
+		}
+		got := ids[0]
+		got.file = nil
+		if !cmp.Equal(got, *test.want, cmp.AllowUnexported(importDirective{})) {
 			t.Errorf("%d: got %v, want %v", i, got, test.want)
 		}
 	}

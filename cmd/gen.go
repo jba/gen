@@ -118,7 +118,7 @@ func runWithBindings(genPath, outputDir, outputName string, bindingMap map[strin
 		return err
 	}
 	// Handle import directives by recursively instantiating the types.
-	importDirectives, err := parseDirectives(apkg)
+	importDirectives, err := parseDirectives(fset, apkg)
 	if err != nil {
 		return err
 	}
@@ -483,53 +483,82 @@ type importDirective struct {
 	file         *ast.File
 }
 
-func parseDirectives(p *ast.Package) ([]importDirective, error) {
+// An import directive is of the form "gen:import bindingSpec...".
+// An import directive must be on the same line as the import spec.
+func parseDirectives(fset *token.FileSet, p *ast.Package) ([]importDirective, error) {
 	var ids []importDirective
+	var err error
 	for _, file := range p.Files {
-		for _, d := range directiveLines(file) {
-			// TODO: handle spaces in import path
-			fields := strings.Fields(d)
+		cmap := ast.NewCommentMap(fset, file, file.Comments)
+		ast.Inspect(file, func(n ast.Node) bool {
+			var ispec *ast.ImportSpec
+			switch n := n.(type) {
+			case *ast.ImportSpec:
+				ispec = n
+			case *ast.GenDecl:
+				// In the case of a single import statement, the comment is attached to
+				// the GenDecl node.
+				if len(n.Specs) == 1 && cmap[n] != nil {
+					if is, ok := n.Specs[0].(*ast.ImportSpec); ok {
+						ispec = is
+					}
+				}
+			}
+			if ispec == nil {
+				return true
+			}
+			cgs := cmap[n]
+			if cgs == nil && ispec.Comment != nil {
+				cgs = []*ast.CommentGroup{ispec.Comment}
+			}
+			if cgs == nil {
+				return true
+			}
+			bspecs, err2 := extractBindingSpecs(cgs)
+			if err2 != nil {
+				err = fmt.Errorf("%s: %v", fset.Position(ispec.Pos()), err)
+				return false
+			}
+			if bspecs != nil {
+				if ispec.Name == nil {
+					err = fmt.Errorf("%s: %s: generic import must have a name", fset.Position(ispec.Pos()),
+						ispec.Path.Value)
+					return false
+				}
+				ids = append(ids, importDirective{
+					name:         ispec.Name.Name,
+					path:         importPath(ispec),
+					bindingSpecs: bspecs,
+					file:         file,
+				})
+			}
+			return true
+		})
+	}
+	return ids, err
+}
+
+func extractBindingSpecs(cgroups []*ast.CommentGroup) ([]string, error) {
+	const directiveName = "gen:import"
+	var result []string
+	for _, g := range cgroups {
+		for _, c := range g.List {
+			txt := strings.Trim(c.Text, "/* \t")
+			fields := strings.Fields(txt)
 			if len(fields) == 0 {
 				continue
 			}
-			if fields[0] != "gen:import" {
-				return nil, fmt.Errorf("unknown directive %q", d)
+			if fields[0] != directiveName {
+				continue
 			}
-			if len(fields) < 4 {
-				return nil, fmt.Errorf("malformed directive %q. want: name path bindings...", d)
+			if result != nil {
+				return nil, fmt.Errorf("more than one associated set of bindings: %v and %v",
+					result, fields[1:])
 			}
-			if fields[2][0] == '"' {
-				var err error
-				fields[2], err = strconv.Unquote(fields[2])
-				if err != nil {
-					return nil, err
-				}
-			}
-			ids = append(ids, importDirective{
-				name:         fields[1],
-				path:         fields[2],
-				bindingSpecs: fields[3:],
-				file:         file,
-			})
+			result = fields[1:]
 		}
 	}
-	return ids, nil
-}
-
-func directiveLines(file *ast.File) []string {
-	var dirs []string
-	for _, cg := range file.Comments {
-		for _, c := range cg.List {
-			lines := strings.Split(c.Text, "\n")
-			for _, line := range lines {
-				line = strings.Trim(line, "/* \t")
-				if strings.HasPrefix(line, "gen:") {
-					dirs = append(dirs, line)
-				}
-			}
-		}
-	}
-	return dirs
+	return result, nil
 }
 
 // Modifies the asts in pkg. pkgName is the new package name.

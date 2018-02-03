@@ -34,7 +34,7 @@ func dumpInterface(name string, iface *types.Interface) {
 
 func dumpType(t types.Type, level int) {
 	if level > 10 {
-		fmt.Println("XXXXXXXXXXXXXXXX TOO DEEP XXXXXXXXXXXXXXXX")
+		fmt.Println("error: TOO DEEP")
 		return
 	}
 	fmt.Printf("%*stype %s (%T):\n", level*4, "", t, t)
@@ -47,5 +47,24 @@ func dumpType(t types.Type, level int) {
 		} else {
 			dumpType(tn.Type(), level+1)
 		}
+	}
+}
+
+func dumpCommentMap(m ast.CommentMap) {
+	for n, cgs := range m {
+		fmt.Printf("%#v: ", n)
+		for _, cg := range cgs {
+			dumpCommentGroup(cg)
+		}
+		fmt.Println()
+	}
+}
+
+func dumpCommentGroup(cg *ast.CommentGroup) {
+	if cg == nil {
+		return
+	}
+	for _, c := range cg.List {
+		fmt.Printf("%q\n", c.Text)
 	}
 }
