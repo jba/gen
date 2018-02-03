@@ -97,11 +97,11 @@ func TestCheckBinding(t *testing.T) {
 		{nil, "type T interface{}", "int"},
 		{nil, "type T interface{}", "time.Time"},
 		{nil, "type T interface { Equal(T) bool }", "int"}, // by augmentation
-		{nil, "type T interface { gen.Comparable }", "int"},
+		{nil, "type T interface { generic.Comparable }", "int"},
 		{missingMethodError(""), "type T interface { M() }", "int"},
 		// TODO: test nillable
 	} {
-		code := `package p; import "github.com/jba/gen";` + test.ptypeDecl
+		code := `package p; import "github.com/jba/gen/generic";` + test.ptypeDecl
 		pkg := packageFromSource(code)
 		ptype := topLevelType("T", pkg)
 		atype, err := buildType(test.atypeExpr, lookupBuiltinName)
@@ -312,7 +312,7 @@ func TestReplaceCode(t *testing.T) {
 			type I interface{}
 	    ` + test.in
 		pkg := packageFromSource(code)
-		file := singleFile(pkg.apkg)
+		file := singleFile(pkg.Apkg)
 		ptype := topLevelType("T", pkg)
 		var rewrites []rewrite
 		for _, am := range append([]augmentMethod{equalMethod}, orderedMethods...) {
@@ -332,7 +332,7 @@ func TestReplaceCode(t *testing.T) {
 			}
 			t.Fatal(err)
 		}
-		got := nodeString(file.Scope.Lookup("f").Decl, pkg.fset)
+		got := nodeString(file.Scope.Lookup("f").Decl, pkg.Fset)
 		if trim(got) != trim(test.want) {
 			t.Errorf("-- got --\n%s\n-- want --\n%s", got, test.want)
 			t.Logf("trim(got):  %q\n", trim(got))

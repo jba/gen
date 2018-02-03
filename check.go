@@ -11,15 +11,16 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"golang.org/x/tools/go/ast/astutil"
 )
 
 // CheckPath checks the generic package at path (with respect to dir) for errors. It returns
 // the first error it finds.
-//
 func CheckPath(path, dir string, params []string) (*Package, error) {
 	// Parse the generic package.
 	fset := token.NewFileSet()
-	apkg, err := astPackageFromDir(fset, dir)
+	apkg, err := astPackageFromPath(fset, path, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -29,6 +30,7 @@ func CheckPath(path, dir string, params []string) (*Package, error) {
 		return nil, err
 	}
 	if len(importDirectives) > 0 {
+		panic("not ready")
 		bindingMap := map[string]types.Type{}
 		for _, p := range params {
 			obj := apkg.Scope.Objects[p]
@@ -64,7 +66,7 @@ func CheckPath(path, dir string, params []string) (*Package, error) {
 	if err != nil {
 		return nil, err
 	}
-	pkg.params = params
+	pkg.Params = params
 	// Check each generic parameter.
 	for _, paramName := range params {
 		gtn, err := pkg.topLevelTypeName(paramName)
@@ -72,15 +74,13 @@ func CheckPath(path, dir string, params []string) (*Package, error) {
 			return nil, err
 		}
 		if err := checkParam(gtn, pkg); err != nil {
-			return nil, fmt.Errorf("%s: %v", pkg.fset.Position(gtn.Pos()), err)
+			return nil, fmt.Errorf("%s: %v", pkg.Fset.Position(gtn.Pos()), err)
 		}
 	}
 	return pkg, nil
 }
 
 // An import directive is of the form "gen:import bindingSpec...".
-// An import directive must be on the same line as the import spec.
-
 func processImportDirectives(outputDir string, ids []importDirective, fset *token.FileSet, bindings map[string]types.Type) error {
 	panic("unimp")
 }
@@ -125,33 +125,32 @@ func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package
 	}
 	tpkg, err := typecheck(ipath, fset, files, info)
 	if err != nil {
-		fmt.Printf("typechecker on %s: %v", ipath, err)
-		return nil, err
+		return nil, fmt.Errorf("typechecker on %s: %v", ipath, err)
 	}
 	return &Package{
-		path: ipath,
-		fset: fset,
-		apkg: apkg,
-		tpkg: tpkg,
+		Path: ipath,
+		Fset: fset,
+		Apkg: apkg,
+		Tpkg: tpkg,
 		info: info,
 	}, nil
 }
 
 type Package struct {
-	path   string
-	fset   *token.FileSet
-	apkg   *ast.Package
-	tpkg   *types.Package
+	Path   string
+	Fset   *token.FileSet
+	Apkg   *ast.Package
+	Tpkg   *types.Package
+	Params []string
 	info   *types.Info
-	params []string
 }
 
 func (p *Package) String() string {
-	return fmt.Sprintf("%s (%s)", p.tpkg.Name(), p.tpkg.Path())
+	return fmt.Sprintf("%s (%s)", p.Tpkg.Name(), p.Tpkg.Path())
 }
 
 func (p *Package) topLevelTypeName(name string) (*types.TypeName, error) {
-	gobj := p.tpkg.Scope().Lookup(name)
+	gobj := p.Tpkg.Scope().Lookup(name)
 	if gobj == nil {
 		return nil, fmt.Errorf("cannot find %s in package %s", name, p)
 	}
@@ -321,7 +320,7 @@ func checkSpecialInterface(name string, gtn *types.TypeName, iface *types.Interf
 	has := implementsSpecialInterface(iface, name)
 	if node != nil && !has {
 		return fmt.Sprintf("param %s does not implement gen.%s, but it is required at %s",
-			gtn.Name(), name, pkg.fset.Position(node.Pos()))
+			gtn.Name(), name, pkg.Fset.Position(node.Pos()))
 	}
 	if node == nil && has {
 		log.Printf("param %s includes gen.%s, but does not need it", gtn.Name(), name)
@@ -347,7 +346,7 @@ func comparableNode(t types.Type, pkg *Package) ast.Node {
 		return pkg.info.Types[e].Type
 	}
 	var result ast.Node
-	for _, file := range pkg.apkg.Files {
+	for _, file := range pkg.Apkg.Files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			if needsComparable(n, t, typeOf) {
 				result = n
@@ -500,7 +499,7 @@ func nillableNode(t types.Type, pkg *Package) ast.Node {
 		return vf
 	}
 
-	for _, file := range pkg.apkg.Files {
+	for _, file := range pkg.Apkg.Files {
 		ast.Walk(withSig(nil), file)
 		if result != nil {
 			return result
@@ -537,4 +536,10 @@ func comparableMod(t types.Type, assumeNot types.Type) bool {
 		return comparableMod(t.Elem(), assumeNot)
 	}
 	return false
+}
+
+func instantiateImportPaths(fset *token.FileSet, file *ast.File, name, gpath, ipath string) error {
+	astutil.DeleteImport(fset, file, gpath)
+	astutil.AddNamedImport(fset, file, name, ipath)
+	return nil
 }

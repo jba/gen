@@ -49,7 +49,7 @@ func Instantiate(pkg *Package, name string, bindings map[string]types.Type) erro
 	}
 	for _, b := range bindingList {
 		if !b.found {
-			return fmt.Errorf("no type parameter %s in %s", b.param, pkg.path)
+			return fmt.Errorf("no type parameter %s in %s", b.param, pkg.Path)
 		}
 	}
 
@@ -68,8 +68,8 @@ func substitutePackage(pkg *Package, bindings []*Binding, pkgName string) error 
 			})
 		}
 	}
-	pkg.apkg.Name = pkgName
-	for filename, file := range pkg.apkg.Files {
+	pkg.Apkg.Name = pkgName
+	for filename, file := range pkg.Apkg.Files {
 		// Skip test files. They probably have concrete implementations of the
 		// type parameters, so we can't specialize them.
 		if strings.HasSuffix(filename, "_test.go") {
@@ -100,19 +100,19 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, pk
 			if name == path.Base(ipath) {
 				name = ""
 			}
-			astutil.AddNamedImport(pkg.fset, file, name, ipath)
+			astutil.AddNamedImport(pkg.Fset, file, name, ipath)
 		}
 		// Turn the type spec into an alias if it isn't already.
 		if !typeSpec.Assign.IsValid() {
 			typeSpec.Assign = typeSpec.Type.Pos()
 		}
-		typeSpec.Type = typeToExpr(b.arg, pkg.tpkg)
+		typeSpec.Type = typeToExpr(b.arg, pkg.Tpkg)
 	}
 	file.Name.Name = name
 	if err := replaceCode(file, bindings, rewrites, pkg); err != nil {
 		return err
 	}
-	for _, impgrp := range astutil.Imports(pkg.fset, file) {
+	for _, impgrp := range astutil.Imports(pkg.Fset, file) {
 		for _, impspec := range impgrp {
 			path := importPath(impspec)
 			if !astutil.UsesImport(file, path) {
@@ -120,7 +120,7 @@ func substituteFile(filename string, bindings []*Binding, rewrites []rewrite, pk
 				if impspec.Name != nil {
 					name = impspec.Name.Name
 				}
-				astutil.DeleteNamedImport(pkg.fset, file, name, path)
+				astutil.DeleteNamedImport(pkg.Fset, file, name, path)
 			}
 		}
 	}
@@ -264,7 +264,7 @@ func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *P
 					continue
 				}
 				if !types.Identical(pkg.info.Types[n.Type].Type, b.arg) {
-					err = fmt.Errorf("%s: failed type assertion", pkg.fset.Position(n.Pos()))
+					err = fmt.Errorf("%s: failed type assertion", pkg.Fset.Position(n.Pos()))
 					return false
 				}
 				c.Replace(n.X)
@@ -408,7 +408,7 @@ func replaceTwoValueAssert(e *ast.TypeAssertExpr, bindings []*Binding, pkg *Pack
 		if types.Identical(etype, b.arg) {
 			return []ast.Expr{e.X, id("true")}
 		} else {
-			return []ast.Expr{zeroExpr(etype, pkg.tpkg), id("false")}
+			return []ast.Expr{zeroExpr(etype, pkg.Tpkg), id("false")}
 		}
 	}
 	return []ast.Expr{e}

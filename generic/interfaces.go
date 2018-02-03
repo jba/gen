@@ -1,4 +1,4 @@
-package gen
+package generic
 
 // Comparable means supports ==
 type Comparable interface{}

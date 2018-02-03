@@ -1,10 +1,10 @@
 package maps
 
-import "github.com/jba/gen"
+import "github.com/jba/gen/generic"
 
 type (
 	K interface {
-		gen.Comparable
+		generic.Comparable
 	}
 	V interface{}
 )

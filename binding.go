@@ -5,6 +5,8 @@ import (
 	"go/token"
 	"go/types"
 	"log"
+	"strconv"
+	"strings"
 )
 
 type Binding struct {
@@ -15,13 +17,54 @@ type Binding struct {
 
 var verbose = false
 
+// Parse a string of the form "param:type", where param is an identifier
+// and type is a possibly-qualified type name, like "fmt.Stringer"
+// or "golang.org/x/net/context.Context".
+func ParseBindingSpec(s string) (param, arg string, err error) {
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("bad spec %q", s)
+	}
+	param = parts[0]
+	sub := parts[1]
+	switch i := strings.LastIndex(sub, "."); {
+	case i < 0:
+		arg = sub
+	case i == 0:
+		return "", "", fmt.Errorf("empty import path in spec %q", s)
+	default:
+		path, name := sub[:i], sub[i+1:]
+		if path[0] != '"' {
+			path = strconv.Quote(path)
+		}
+		arg = path + "." + name
+	}
+	return param, arg, nil
+}
+
+func NewBindingMap(specs map[string]string) (map[string]types.Type, error) {
+	return newBindingMap(specs, lookupBuiltinName)
+}
+
+func newBindingMap(specs map[string]string, lookup func(string) types.Type) (map[string]types.Type, error) {
+	m := map[string]types.Type{}
+	for param, arg := range specs {
+		atype, err := buildType(arg, lookup)
+		if err != nil {
+			return nil, err
+		}
+		m[param] = atype
+	}
+	return m, nil
+}
+
 func newBinding(paramName string, argType types.Type, pkg *Package) (*Binding, error) {
 	gtn, err := pkg.topLevelTypeName(paramName)
 	if err != nil {
 		return nil, err
 	}
 	if err := checkBinding(gtn.Type(), argType); err != nil {
-		return nil, fmt.Errorf("%s: %v", pkg.fset.Position(gtn.Pos()), err)
+		return nil, fmt.Errorf("%s: %v", pkg.Fset.Position(gtn.Pos()), err)
 	}
 	return &Binding{
 		param: gtn,
@@ -135,7 +178,7 @@ func augmentedMethods(t types.Type) []augmentMethod {
 	return ams
 }
 
-const genImportPath = "github.com/jba/gen"
+const genImportPath = "github.com/jba/gen/generic"
 
 func implementsSpecialInterface(iface *types.Interface, name string) bool {
 	for i := 0; i < iface.NumEmbeddeds(); i++ {
