@@ -6,10 +6,19 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestDirToImportPath(t *testing.T) {
+	got := dirToImportPath(os.Getenv("HOME") + "/go/src/github.com/jba")
+	want := "github.com/jba"
+	if got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
 
 func TestComparableMod(t *testing.T) {
 	empty := types.NewInterface(nil, nil).Complete()

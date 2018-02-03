@@ -25,14 +25,6 @@ import (
 	"testing"
 )
 
-func TestDirToImportPath(t *testing.T) {
-	got := dirToImportPath(os.Getenv("HOME") + "/go/src/github.com/jba")
-	want := "github.com/jba"
-	if got != want {
-		t.Errorf("got %s, want %s", got, want)
-	}
-}
-
 func TestExamples(t *testing.T) {
 	log.SetOutput(ioutil.Discard)
 	outputDir := fmt.Sprintf("%s/src/github.com/jba/gen/tmp.gitignore", os.Getenv("GOPATH"))
