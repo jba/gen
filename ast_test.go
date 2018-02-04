@@ -25,10 +25,10 @@ func TestReloadAST(t *testing.T) {
 	}
 }
 
-func TestParseDirectives(t *testing.T) {
+func TestParseComments(t *testing.T) {
 	for i, test := range []struct {
 		src     string
-		want    *importDirective // nil if none
+		want    *genericImport // nil if none
 		wantErr bool
 	}{
 		{
@@ -73,7 +73,7 @@ package p
 
 import foo "bar" // gen:import X:Y
 `,
-			want: &importDirective{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+			want: &genericImport{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
 		},
 		{
 			src: `
@@ -82,7 +82,7 @@ package p
 // gen:import X:Y
 import foo "bar"
 `,
-			want: &importDirective{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+			want: &genericImport{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
 		},
 		{
 			src: `
@@ -94,7 +94,7 @@ import (
 	foo "bar" // gen:import X:Y
 )
 `,
-			want: &importDirective{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+			want: &genericImport{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
 		},
 		{
 			src: `
@@ -108,14 +108,14 @@ import (
 	foo "bar"
 )
 `,
-			want: &importDirective{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+			want: &genericImport{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
 		}} {
 		fset := token.NewFileSet()
 		apkg, err := astPackage(fset, "<src>", test.src)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ids, err := parseDirectives(fset, apkg)
+		ids, err := parseComments(fset, apkg)
 		if err != nil {
 			if !test.wantErr {
 				t.Fatalf("%d: %v", i, err)
@@ -136,8 +136,8 @@ import (
 			continue
 		}
 		got := ids[0]
-		got.file = nil
-		if !cmp.Equal(got, *test.want, cmp.AllowUnexported(importDirective{})) {
+		got.spec = nil
+		if !cmp.Equal(got, *test.want, cmp.AllowUnexported(genericImport{})) {
 			t.Errorf("%d: got %v, want %v", i, got, test.want)
 		}
 	}

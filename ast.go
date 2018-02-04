@@ -78,40 +78,34 @@ func importPath(s *ast.ImportSpec) string {
 	return ""
 }
 
-type importDirective struct {
+type genericImport struct {
 	name         string
 	path         string
 	bindingSpecs []string
-	file         *ast.File
+	spec         *ast.ImportSpec
 }
 
-func parseDirectives(fset *token.FileSet, p *ast.Package) ([]importDirective, error) {
-	var ids []importDirective
+func parseComments(fset *token.FileSet, p *ast.Package) ([]genericImport, error) {
+	var ids []genericImport
 	var err error
 	for _, file := range p.Files {
-		cmap := ast.NewCommentMap(fset, file, file.Comments)
 		ast.Inspect(file, func(n ast.Node) bool {
 			var ispec *ast.ImportSpec
+			var cgs []*ast.CommentGroup
 			switch n := n.(type) {
 			case *ast.ImportSpec:
 				ispec = n
+				cgs = []*ast.CommentGroup{n.Doc, n.Comment}
+
 			case *ast.GenDecl:
-				// In the case of a single import statement, the comment is attached to
-				// the GenDecl node.
-				if len(n.Specs) == 1 && cmap[n] != nil {
+				if n.Doc != nil && len(n.Specs) == 1 {
 					if is, ok := n.Specs[0].(*ast.ImportSpec); ok {
 						ispec = is
+						cgs = []*ast.CommentGroup{n.Doc}
 					}
 				}
 			}
 			if ispec == nil {
-				return true
-			}
-			cgs := cmap[n]
-			if cgs == nil && ispec.Comment != nil {
-				cgs = []*ast.CommentGroup{ispec.Comment}
-			}
-			if cgs == nil {
 				return true
 			}
 			bspecs, err2 := extractBindingSpecs(cgs)
@@ -125,12 +119,13 @@ func parseDirectives(fset *token.FileSet, p *ast.Package) ([]importDirective, er
 						ispec.Path.Value)
 					return false
 				}
-				ids = append(ids, importDirective{
+				ids = append(ids, genericImport{
 					name:         ispec.Name.Name,
 					path:         importPath(ispec),
 					bindingSpecs: bspecs,
-					file:         file,
+					spec:         ispec,
 				})
+				return false
 			}
 			return true
 		})
@@ -142,6 +137,9 @@ func extractBindingSpecs(cgroups []*ast.CommentGroup) ([]string, error) {
 	const directiveName = "gen:import"
 	var result []string
 	for _, g := range cgroups {
+		if g == nil {
+			continue
+		}
 		for _, c := range g.List {
 			txt := strings.Trim(c.Text, "/* \t")
 			fields := strings.Fields(txt)

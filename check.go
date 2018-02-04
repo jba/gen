@@ -25,11 +25,11 @@ func CheckPath(path, dir string, params []string) (*Package, error) {
 		return nil, err
 	}
 	// Handle import directives by recursively instantiating the types.
-	importDirectives, err := parseDirectives(fset, apkg)
+	genericImports, err := parseComments(fset, apkg)
 	if err != nil {
 		return nil, err
 	}
-	if len(importDirectives) > 0 {
+	if len(genericImports) > 0 {
 		bindingMap := map[string]types.Type{}
 		for _, p := range params {
 			typ, err := paramTypeFromAST(p, apkg)
@@ -39,7 +39,7 @@ func CheckPath(path, dir string, params []string) (*Package, error) {
 			bindingMap[p] = typ
 		}
 		outputDir := "/tmp"
-		err := processImportDirectives(outputDir, importDirectives, fset, bindingMap)
+		err := processImportDirectives(outputDir, genericImports, fset, bindingMap)
 		if err != nil {
 			return nil, err
 		}
@@ -69,7 +69,7 @@ func CheckPath(path, dir string, params []string) (*Package, error) {
 }
 
 // An import directive is of the form "gen:import bindingSpec...".
-func processImportDirectives(outputDir string, ids []importDirective, fset *token.FileSet, bindings map[string]types.Type) error {
+func processImportDirectives(outputDir string, ids []genericImport, fset *token.FileSet, bindings map[string]types.Type) error {
 	panic("unimp")
 }
 
