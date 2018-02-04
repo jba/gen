@@ -26,19 +26,25 @@ func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
 	if err != nil {
 		return nil, err
 	}
+	var apkg *ast.Package
 	if len(pkgs) == 1 {
 		for _, p := range pkgs {
-			return p, nil
+			apkg = p
+			break
 		}
-		panic("impossible")
 	} else {
 		pkgName := filepath.Base(dir)
-		apkg := pkgs[pkgName]
+		apkg = pkgs[pkgName]
 		if apkg == nil {
 			return nil, fmt.Errorf("can't find package %q in directory %q", pkgName, dir)
 		}
-		return apkg, nil
 	}
+	for filename := range apkg.Files {
+		if strings.HasSuffix(filename, "_test.go") {
+			delete(apkg.Files, filename)
+		}
+	}
+	return apkg, nil
 }
 
 func reloadAST(fset *token.FileSet, apkg *ast.Package) (*token.FileSet, *ast.Package, error) {

@@ -115,7 +115,7 @@ func packageFromSource(src string) *Package {
 	if err != nil {
 		panic(err)
 	}
-	pkg, err := makePackage(fset, "<path>", apkg)
+	pkg, err := makePackage("<path>", fset, apkg)
 	if err != nil {
 		panic(fmt.Sprintf("%s: %v", src, err))
 	}

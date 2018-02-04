@@ -30,11 +30,9 @@ import (
 
 // Instantiate instantiates the generic package, giving the resulting package the given name.
 // The bindings are a map from generic parameter name to the instantiated type of the parameter.
-// After Instantiate returns, the AST of pkg has been altered.
-// Notes:
-// - The AST may be altered even if Instantiate returns an error.
-// - The fset in pkg will be wrong. That doesn't matter for writing the package,
-//   but does for additional processing; use reloadAST in that case.
+// After Instantiate returns, the AST of pkg has been altered, the FileSet has been updated to
+// match and the new package has been typechecked.
+// Note: the AST may be altered even if Instantiate returns an error.
 func Instantiate(pkg *Package, name string, bindings map[string]types.Type) error {
 	var bindingList []*Binding
 	for param, argType := range bindings {
@@ -52,7 +50,17 @@ func Instantiate(pkg *Package, name string, bindings map[string]types.Type) erro
 			return fmt.Errorf("no type parameter %s in %s", b.param, pkg.Path)
 		}
 	}
-
+	var err error
+	pkg.Fset, pkg.Apkg, err = reloadAST(pkg.Fset, pkg.Apkg)
+	if err != nil {
+		return err
+	}
+	tpkg, info, err := typecheckPackage("dummy_import_path/"+name, pkg.Fset, pkg.Apkg)
+	if err != nil {
+		return err
+	}
+	pkg.Tpkg = tpkg
+	pkg.info = info
 	return nil
 }
 

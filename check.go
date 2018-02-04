@@ -30,21 +30,9 @@ func CheckPath(path, dir string, params []string) (*Package, error) {
 		return nil, err
 	}
 	if len(importDirectives) > 0 {
-		panic("not ready")
 		bindingMap := map[string]types.Type{}
 		for _, p := range params {
-			obj := apkg.Scope.Objects[p]
-			if obj == nil {
-				return nil, fmt.Errorf("no top-level name %q in package %q", p, path)
-			}
-			if obj.Kind != ast.Typ {
-				return nil, fmt.Errorf("%q is not a type in package %q", p, path)
-			}
-			expr, ok := obj.Type.(ast.Expr)
-			if !ok {
-				return nil, fmt.Errorf("obj.Type is %T, not expr", obj.Type)
-			}
-			typ, err := exprToType(expr, lookupBuiltinName)
+			typ, err := paramTypeFromAST(p, apkg)
 			if err != nil {
 				return nil, err
 			}
@@ -62,7 +50,7 @@ func CheckPath(path, dir string, params []string) (*Package, error) {
 		}
 	}
 	// Typecheck the package.
-	pkg, err := makePackage(fset, path, apkg)
+	pkg, err := makePackage(path, fset, apkg)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +102,7 @@ func processImportDirectives(outputDir string, ids []importDirective, fset *toke
 // 	return nil
 // }
 
-func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package, error) {
+func typecheckPackage(path string, fset *token.FileSet, apkg *ast.Package) (*types.Package, *types.Info, error) {
 	var files []*ast.File
 	for _, file := range apkg.Files {
 		files = append(files, file)
@@ -123,12 +111,20 @@ func makePackage(fset *token.FileSet, ipath string, apkg *ast.Package) (*Package
 		Defs:  make(map[*ast.Ident]types.Object),
 		Types: make(map[ast.Expr]types.TypeAndValue),
 	}
-	tpkg, err := typecheck(ipath, fset, files, info)
+	tpkg, err := typecheck(path, fset, files, info)
 	if err != nil {
-		return nil, fmt.Errorf("typechecker on %s: %v", ipath, err)
+		return nil, nil, fmt.Errorf("typechecker on %s: %v", path, err)
+	}
+	return tpkg, info, nil
+}
+
+func makePackage(path string, fset *token.FileSet, apkg *ast.Package) (*Package, error) {
+	tpkg, info, err := typecheckPackage(path, fset, apkg)
+	if err != nil {
+		return nil, err
 	}
 	return &Package{
-		Path: ipath,
+		Path: path,
 		Fset: fset,
 		Apkg: apkg,
 		Tpkg: tpkg,
@@ -183,6 +179,21 @@ var theImporter = compiledThenSourceImporter{
 }
 
 var typecheck = (&types.Config{Importer: theImporter, DisableUnusedImportCheck: true}).Check
+
+func paramTypeFromAST(paramName string, apkg *ast.Package) (types.Type, error) {
+	obj := apkg.Scope.Objects[paramName]
+	if obj == nil {
+		return nil, fmt.Errorf("no top-level name %q in package %s", paramName, apkg.Name)
+	}
+	if obj.Kind != ast.Typ {
+		return nil, fmt.Errorf("%q is not a type in package %s", paramName, apkg.Name)
+	}
+	expr, ok := obj.Type.(ast.Expr)
+	if !ok {
+		return nil, fmt.Errorf("obj.Type is %T, not expr", obj.Type)
+	}
+	return exprToType(expr, lookupBuiltinName)
+}
 
 func exprToType(expr ast.Expr, lookupName func(string) types.Type) (types.Type, error) {
 	switch e := expr.(type) {

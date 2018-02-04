@@ -11,7 +11,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/jba/gen"
 )
@@ -42,7 +41,6 @@ func requireFlag(flag, val string) {
 }
 
 func run(genPath, outputDir, outputName string, args []string) error {
-	// Parse the bindings, and build the arg types.
 	if len(args) == 0 {
 		return errors.New("need bindings")
 	}
@@ -97,9 +95,6 @@ func writePackage(fset *token.FileSet, apkg *ast.Package, outputDir, outputName 
 
 func printPackage(fset *token.FileSet, apkg *ast.Package, dir string) error {
 	for filename, file := range apkg.Files {
-		if strings.HasSuffix(filename, "_test.go") {
-			continue
-		}
 		outfile := filepath.Join(dir, filepath.Base(filename))
 		f, err := os.Create(outfile)
 		if err != nil {
