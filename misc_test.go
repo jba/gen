@@ -14,9 +14,9 @@ func Test_TypesInfo(t *testing.T) {
 	// Learn about how the go/types package works.
 	const src = `
 		package p
-		type T interface{}
-	    type U T
-        type V U
+		type T interface{ Less(T) bool }
+//	    type U T
+//        type V U
 `
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "<src>", src, 0)
@@ -26,7 +26,12 @@ func Test_TypesInfo(t *testing.T) {
 	info := &types.Info{
 		Defs: make(map[*ast.Ident]types.Object),
 	}
-	_, err = typecheck("path", fset, []*ast.File{file}, info)
+
+	config := &types.Config{
+		Importer:                 theImporter,
+		DisableUnusedImportCheck: true,
+	}
+	_, err = config.Check("PATH", fset, []*ast.File{file}, info)
 	for id, obj := range info.Defs {
 		fmt.Printf("%s => %v:\n", id.Name, obj)
 		if obj != nil {

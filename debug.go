@@ -37,15 +37,35 @@ func dumpType(t types.Type, level int) {
 		fmt.Println("error: TOO DEEP")
 		return
 	}
-	fmt.Printf("%*stype %s (%T):\n", level*4, "", t, t)
-	fmt.Printf("%*s- underlying: %v (%T)\n", level*4, "", t.Underlying(), t.Underlying())
-	if named, ok := t.(*types.Named); ok {
-		tn := named.Obj()
-		fmt.Printf("%*s- typename: %v\n", level*4, "", tn)
+	printf := func(format string, args ...interface{}) {
+		for i := 0; i < level; i++ {
+			fmt.Print("    ")
+		}
+		fmt.Printf(format, args...)
+	}
+
+	printf("type %[1]s (%[1]T):\n", t)
+	printf("- underlying: %[1]v (%[1]T)\n", t.Underlying())
+	switch t := t.(type) {
+	case *types.Named:
+		tn := t.Obj()
+		printf("- typename: %v\n", tn)
+		printf("- # methods: %d\n", t.NumMethods())
 		if tn.Type() == t {
-			fmt.Printf("t's TypeName's type == t\n")
+			printf("t's TypeName's type == t\n")
 		} else {
 			dumpType(tn.Type(), level+1)
+		}
+	case *types.Signature:
+		for i := 0; i < t.Params().Len(); i++ {
+			v := t.Params().At(i)
+			printf("param #%d:\n", i)
+			dumpType(v.Type(), level+1)
+		}
+		for i := 0; i < t.Results().Len(); i++ {
+			v := t.Results().At(i)
+			printf("result #%d:\n", i)
+			dumpType(v.Type(), level+1)
 		}
 	}
 }

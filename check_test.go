@@ -98,6 +98,51 @@ func TestCheckParamErrors(t *testing.T) {
 	}
 }
 
+func TestParamTypeFromAST(t *testing.T) {
+	src := `
+package p
+
+type T1 interface{}
+type T2 interface { Less(T2) bool }
+`
+	fset := token.NewFileSet()
+	apkg, err := astPackage(fset, "<src>", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := paramTypeFromAST("T1", apkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := types.NewInterface(nil, nil).Complete()
+	if !empty.Empty() {
+		t.Fatal("not empty")
+	}
+	want := newNamedType("T1", empty)
+	if !types.Identical(got.Underlying(), want.Underlying()) {
+		t.Errorf("got %v, want %v", got.Underlying(), want.Underlying())
+	}
+
+	tn := types.NewTypeName(token.NoPos, nil, "T2", nil)
+	nt := types.NewNamed(tn, nil, nil)
+	sig := types.NewSignature(
+		nil,
+		types.NewTuple(types.NewParam(token.NoPos, nil, "", nt)),
+		types.NewTuple(types.NewParam(token.NoPos, nil, "", types.Typ[types.Bool])),
+		false)
+	ms := []*types.Func{types.NewFunc(token.NoPos, nil, "Less", sig)}
+	want = types.NewInterface(ms, nil).Complete()
+	got, err = paramTypeFromAST("T2", apkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gots := fmt.Sprint(got.Underlying())
+	wants := fmt.Sprint(want)
+	if gots != wants {
+		t.Errorf("got %v, want %v", gots, wants)
+	}
+}
+
 // Creates the same type you get from "type <name> <t>"
 func newNamedType(name string, t types.Type) types.Type {
 	tn := types.NewTypeName(token.NoPos, nil, name, nil)
@@ -115,7 +160,7 @@ func packageFromSource(src string) *Package {
 	if err != nil {
 		panic(err)
 	}
-	pkg, err := makePackage("<path>", fset, apkg)
+	pkg, err := makePackage("<path>", fset, apkg, theImporter)
 	if err != nil {
 		panic(fmt.Sprintf("%s: %v", src, err))
 	}

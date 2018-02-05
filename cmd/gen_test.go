@@ -32,15 +32,16 @@ func TestExamples(t *testing.T) {
 		outPkg string
 		specs  []string
 	}{
-		{"stack", "intstack", []string{"T:int"}},
-		{"stack", "stringmapstack", []string{"T:map[string]bool"}},
-		{"slices", "strslices", []string{"T:string"}},
-		{"slices", "timeslices", []string{"T:time.Time"}},
-		{"maps", "pointsets", []string{"K:github.com/jba/gen/examples/geo.Point", "V:bool"}},
-		{"ranges", "intranges", []string{"T:int"}},
-		{"ranges", "floatranges", []string{"T:float64"}},
-		// TODO: ranges for the Int type in ranges_test.go (put it in another package)
-		//{"nested", "intnested", []string{"T:int"}},
+		// {"stack", "intstack", []string{"T:int"}},
+		// {"stack", "stringmapstack", []string{"T:map[string]bool"}},
+		// {"slices", "strslices", []string{"T:string"}},
+		// {"slices", "timeslices", []string{"T:time.Time"}},
+		// {"maps", "pointsets", []string{"K:github.com/jba/gen/examples/geo.Point", "V:bool"}},
+		// {"ranges", "intranges", []string{"T:int"}},
+		// {"ranges", "floatranges", []string{"T:float64"}},
+		// // TODO: ranges for the Int type in ranges_test.go (put it in another package)
+		{"nested", "intnested", []string{"T:int"}},
+		//{"sortedset", "intss", []string{"T:int"}},
 	} {
 		t.Run(test.outPkg, func(t *testing.T) {
 			err := run(filepath.Join("github.com/jba/gen/examples", test.dir), outputDir, test.outPkg, test.specs)

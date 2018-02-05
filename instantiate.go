@@ -55,7 +55,7 @@ func Instantiate(pkg *Package, name string, bindings map[string]types.Type) erro
 	if err != nil {
 		return err
 	}
-	tpkg, info, err := typecheckPackage("dummy_import_path/"+name, pkg.Fset, pkg.Apkg)
+	tpkg, info, err := typecheckPackage("dummy_import_path/"+name, pkg.Fset, pkg.Apkg, theImporter)
 	if err != nil {
 		return err
 	}

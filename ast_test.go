@@ -1,7 +1,6 @@
 package gen
 
 import (
-	"fmt"
 	"go/token"
 	"testing"
 
@@ -14,14 +13,9 @@ func TestReloadAST(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fset2, apkg2, err := reloadAST(fset, apkg)
+	_, _, err = reloadAST(fset, apkg)
 	if err != nil {
 		t.Fatal(err)
-	}
-	for _, file := range apkg2.Files {
-		if pos := file.Pos(); pos.IsValid() {
-			fmt.Println(fset2.File(pos).Name())
-		}
 	}
 }
 

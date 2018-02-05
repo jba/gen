@@ -22,7 +22,7 @@ func astPackageFromPath(fset *token.FileSet, ipath, dir string) (*ast.Package, e
 }
 
 func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
-	pkgs, err := parser.ParseDir(fset, dir, nil, parser.ParseComments)
+	pkgs, err := parser.ParseDir(fset, dir, nil, parser.ParseComments|parser.AllErrors)
 	if err != nil {
 		return nil, err
 	}
@@ -45,6 +45,16 @@ func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
 		}
 	}
 	return apkg, nil
+}
+
+func lookupTopLevel(apkg *ast.Package, name string) *ast.Object {
+	// apkg.Scope is nil (bug in ast package?)
+	for _, f := range apkg.Files {
+		if obj := f.Scope.Objects[name]; obj != nil {
+			return obj
+		}
+	}
+	return nil
 }
 
 func reloadAST(fset *token.FileSet, apkg *ast.Package) (*token.FileSet, *ast.Package, error) {

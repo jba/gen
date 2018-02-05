@@ -58,7 +58,7 @@ func run(genPath, outputDir, outputName string, args []string) error {
 	if err != nil {
 		return err
 	}
-	pkg, err := gen.CheckPath(genPath, cwd, params)
+	pkg, err := gen.Check(genPath, cwd, params)
 	if err != nil {
 		return fmt.Errorf("check failed: %v", err)
 	}
