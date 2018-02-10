@@ -15,8 +15,7 @@ func TestReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = apkg.reload()
-	if err != nil {
+	if err := apkg.reload(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -129,6 +128,7 @@ import (
 		}
 		got := ids[0]
 		got.spec = nil
+		got.file = nil
 		if !cmp.Equal(got, *test.want, cmp.AllowUnexported(genericImport{})) {
 			t.Errorf("%d: got %v, want %v", i, got, test.want)
 		}
@@ -161,6 +161,38 @@ func pre_f(foo pre_T) pre_T { var v = foo; return foo }
 
 func pre_g(bar pre_T) { type T bool; pre_v = bar }
 `
+	if got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestReplaceImportWithPrefix(t *testing.T) {
+	src := `
+package p
+import foo "bar"
+const c = foo.c
+type t = foo.t
+var v = foo.v
+func f(x foo.t) { var y = foo.d; var foo struct{i int}; foo.i = 1 }
+
+`
+	apkg := astPackageFromSource(src)
+	file := singleFile(apkg.pkg)
+	replaceImportWithPrefix(file, "foo", "foo_")
+	got := nodeString(file, apkg.fset)
+	want := `package p
+
+import foo "bar"
+
+const c = foo_c
+
+type t = foo_t
+
+var v = foo_v
+
+func f(x foo_t,) { var y = foo_d; var foo struct{ i int }; foo.i = 1 }
+`
+	// Note: extra comma in f's arglist is what astutil.Apply followed by format.Node does.
 	if got != want {
 		t.Errorf("got\n%s\nwant\n%s", got, want)
 	}

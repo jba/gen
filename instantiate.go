@@ -44,8 +44,7 @@ func Instantiate(pkg *Package, pkgName string, bindings map[string]types.Type) e
 			return fmt.Errorf("no type parameter %s in %s", b.param, pkg.Path)
 		}
 	}
-	pkg.Apkg, err = pkg.Apkg.reload()
-	if err != nil {
+	if err := pkg.Apkg.reload(); err != nil {
 		return err
 	}
 	tpkg, info, err := typecheckPackage("dummy_import_path/"+pkgName, pkg.Apkg, theImporter)
@@ -138,23 +137,31 @@ func findTypeDecl(param *types.TypeName, file *ast.File) *ast.TypeSpec {
 	return paramPath[1].(*ast.TypeSpec)
 }
 
-// InstantiateInto instantiates generic package pkg into the package dest.
-// The filenames and symbols of pkg are given prefix.
-// **************** pkg is trashed afterwards.
-func InstantiateInto(pkg *Package, prefix string, bindings map[string]types.Type, dest *ast.Package) error {
-	// TODO: name collisions between the new names we create and existing names in dest (including filenames).
-	bindingList, err := newBindingList(bindings, pkg)
+// InstantiateInto instantiates generic package gpkg into the package dest.
+// The filenames and symbols of pkg are prefixed with the generic import's name.
+// gpkg's AST is messed up afterwards.
+// TODO: name collisions between the new names we create and existing names in dest (including filenames).
+func InstantiateInto(gpkg *Package, gimp genericImport, bindings map[string]types.Type, dest *astPackage) error {
+	// Check that all equivalent generic imports use the same name. We depend on that fact when rewriting.
+	for _, gi := range gpkg.Apkg.genericImports {
+		if gi.samePathAndBindings(gimp) && gi.name != gimp.name {
+			return fmt.Errorf("different names for same generic import: %q and %q", gi.name, gimp.name)
+		}
+	}
+	bindingList, err := newBindingList(bindings, gpkg)
 	if err != nil {
 		return err
 	}
-	if err := substitutePackageInto(pkg, bindingList, prefix+"_", dest); err != nil {
+	if err := substitutePackageInto(gpkg, bindingList, gimp, dest); err != nil {
 		return err
 	}
 	for _, b := range bindingList {
 		if !b.found {
-			return fmt.Errorf("no type parameter %s in %s", b.param, pkg.Path)
+			return fmt.Errorf("no type parameter %s in %s", b.param, gpkg.Path)
 		}
 	}
+	return dest.reload()
+
 	// var err error
 	// pkg.Fset, pkg.Apkg, err = reloadAST(pkg.Fset, pkg.Apkg)
 	// if err != nil {
@@ -166,29 +173,36 @@ func InstantiateInto(pkg *Package, prefix string, bindings map[string]types.Type
 	// }
 	// pkg.Tpkg = tpkg
 	// pkg.info = info
-	return nil
+	// return nil
 }
 
-func substitutePackageInto(src *Package, bindings []*Binding, prefix string, dest *ast.Package) error {
+func substitutePackageInto(src *Package, bindings []*Binding, gimp genericImport, dest *astPackage) error {
+	prefix := gimp.name + "_"
 	// Remove filenames with prefix from dest, because they are from an earlier instantiation.
-	for filename := range dest.Files {
+	for filename := range dest.pkg.Files {
 		if strings.HasPrefix(filename, prefix) {
-			delete(dest.Files, filename)
+			delete(dest.pkg.Files, filename)
 		}
 	}
-
 	// For each file in dest that imports src, replace references to the import identifier with
 	// prefixed symbols.
+	// We already checked that all generic imports matching gimp use the same name.
+	for _, gi := range dest.genericImports {
+		if gi.name != gimp.name {
+			//astutil.DeleteNamedImport(dest.fset, gi.file, gi.name, gi.path)
+			replaceImportWithPrefix(gi.file, gimp.name, prefix)
+		}
+	}
 
 	// Perform normal substitution on the files of src, and also prefix all top-level symbols.
 	// Add the modified files of src to dest.
 	rws := makeRewriteRules(bindings)
 	for filename, file := range src.Apkg.pkg.Files {
-		if err := substituteFile(file, bindings, rws, src, dest.Name); err != nil {
+		if err := substituteFile(file, bindings, rws, src, dest.pkg.Name); err != nil {
 			return err
 		}
 		prefixTopLevelSymbols(file, prefix)
-		dest.Files[prefix+filename] = file
+		dest.pkg.Files[prefix+filename] = file
 	}
 	return nil
 }

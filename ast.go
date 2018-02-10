@@ -75,7 +75,7 @@ func (a *astPackage) lookupTopLevel(name string) *ast.Object {
 	return nil
 }
 
-func (a *astPackage) reload() (*astPackage, error) {
+func (a *astPackage) reload() error {
 	fset2 := token.NewFileSet()
 	apkg2 := &ast.Package{
 		Name:  a.pkg.Name,
@@ -84,23 +84,22 @@ func (a *astPackage) reload() (*astPackage, error) {
 	for filename, file := range a.pkg.Files {
 		var buf bytes.Buffer
 		if err := format.Node(&buf, a.fset, file); err != nil {
-			return nil, err
+			return err
 		}
 		file2, err := parser.ParseFile(fset2, filename, &buf, parser.ParseComments)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		apkg2.Files[filename] = file2
 	}
 	gis, err := parseComments(fset2, apkg2)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &astPackage{
-		pkg:            apkg2,
-		fset:           fset2,
-		genericImports: gis,
-	}, nil
+	a.fset = fset2
+	a.pkg = apkg2
+	a.genericImports = gis
+	return nil
 }
 
 // importPath returns the unquoted import path of s,
@@ -118,6 +117,7 @@ type genericImport struct {
 	name         string
 	path         string
 	bindingSpecs map[string]bool
+	file         *ast.File
 	spec         *ast.ImportSpec
 }
 
@@ -163,7 +163,8 @@ func parseComments(fset *token.FileSet, p *ast.Package) ([]genericImport, error)
 					name:         ispec.Name.Name,
 					path:         importPath(ispec),
 					bindingSpecs: bspecs,
-					//spec:         ispec,
+					file:         file,
+					spec:         ispec,
 				})
 				return false
 			}
@@ -258,4 +259,19 @@ func prefixTopLevelSymbols(file *ast.File, prefix string) {
 		}
 		return true
 	})
+}
+
+func replaceImportWithPrefix(file *ast.File, importID, prefix string) {
+	pre := func(c *astutil.Cursor) bool {
+		if sel, ok := c.Node().(*ast.SelectorExpr); ok {
+			// If the X expression is an identifier without an Obj, assume
+			// it refers to an import.
+			// TODO: verify that.
+			if id, ok := sel.X.(*ast.Ident); ok && id.Obj == nil && id.Name == importID {
+				c.Replace(&ast.Ident{Name: prefix + sel.Sel.Name})
+			}
+		}
+		return true
+	}
+	astutil.Apply(file, pre, nil)
 }

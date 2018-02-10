@@ -41,8 +41,7 @@ func Check(path, dir string, params []string) (*Package, error) {
 			return nil, err
 		}
 		// We changed the AST, so the fset will be wrong. Reload.
-		apkg, err = apkg.reload()
-		if err != nil {
+		if err := apkg.reload(); err != nil {
 			return nil, err
 		}
 	}
