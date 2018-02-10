@@ -3,7 +3,6 @@ package gen
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"go/types"
 	"log"
@@ -332,17 +331,4 @@ func zeroExpr(t types.Type, tpkg *types.Package) ast.Expr {
 	default:
 		panic("unknown type")
 	}
-}
-
-// TODO: only here because of CheckBindings test; move elsewhere? Export??
-// buildType constructs a types.Type from a string expression that should
-// denote a type. In the string, import paths with slashes must be quoted,
-// and array lengths must be literal integers.
-// lookupName returns the type for an unqualified name.
-func buildType(s string, lookupName func(string) types.Type) (types.Type, error) {
-	expr, err := parser.ParseExpr(s)
-	if err != nil {
-		return nil, err
-	}
-	return exprToType(expr, lookupName)
 }

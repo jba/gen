@@ -1,7 +1,10 @@
 package gen
 
 import (
+	"bytes"
+	"go/format"
 	"go/token"
+	"log"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -162,4 +165,12 @@ func pre_g(bar pre_T) { type T bool; pre_v = bar }
 	if got != want {
 		t.Errorf("got\n%s\nwant\n%s", got, want)
 	}
+}
+
+func nodeString(n interface{}, fset *token.FileSet) string {
+	var buf bytes.Buffer
+	if err := format.Node(&buf, fset, n); err != nil {
+		log.Fatal(err)
+	}
+	return buf.String()
 }
