@@ -4,9 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/format"
-	"go/token"
 	"io/ioutil"
 	"log"
 	"os"
@@ -69,10 +66,10 @@ func run(genPath, outputDir, outputName string, args []string) error {
 	if err := gen.Instantiate(pkg, outputName, bindings); err != nil {
 		return err
 	}
-	return writePackage(pkg.Fset, pkg.Apkg, outputDir, outputName)
+	return writePackage(pkg, outputDir, outputName)
 }
 
-func writePackage(fset *token.FileSet, apkg *ast.Package, outputDir, outputName string) error {
+func writePackage(pkg *gen.Package, outputDir, outputName string) error {
 	if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
 		return err
 	}
@@ -80,33 +77,16 @@ func writePackage(fset *token.FileSet, apkg *ast.Package, outputDir, outputName 
 	if err != nil {
 		return err
 	}
-	if err := printPackage(fset, apkg, tempOutDir); err != nil {
+
+	if err := pkg.Write(tempOutDir); err != nil {
 		if err := os.Remove(tempOutDir); err != nil {
 			log.Printf("removing %s: %v", tempOutDir, err)
 		}
 		return err
 	}
-	destDir := filepath.Join(outputDir, apkg.Name)
+	destDir := filepath.Join(outputDir, pkg.Name())
 	if err := os.RemoveAll(destDir); err != nil {
 		return err
 	}
 	return os.Rename(tempOutDir, destDir)
-}
-
-func printPackage(fset *token.FileSet, apkg *ast.Package, dir string) error {
-	for filename, file := range apkg.Files {
-		outfile := filepath.Join(dir, filepath.Base(filename))
-		f, err := os.Create(outfile)
-		if err != nil {
-			return err
-		}
-		if err := format.Node(f, fset, file); err != nil {
-			f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
 }

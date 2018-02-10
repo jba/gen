@@ -144,35 +144,6 @@ func makePackage(path string, apkg *astPackage, importer types.Importer) (*Packa
 	}, nil
 }
 
-type Package struct {
-	Path string
-
-	Apkg   *astPackage
-	Tpkg   *types.Package
-	Params []string
-	info   *types.Info
-}
-
-func (p *Package) String() string {
-	return fmt.Sprintf("%s (%s)", p.Tpkg.Name(), p.Tpkg.Path())
-}
-
-func (p *Package) position(pos token.Pos) token.Position {
-	return p.Apkg.fset.Position(pos)
-}
-
-func (p *Package) topLevelTypeName(name string) (*types.TypeName, error) {
-	gobj := p.Tpkg.Scope().Lookup(name)
-	if gobj == nil {
-		return nil, fmt.Errorf("cannot find %s in package %s", name, p)
-	}
-	gtn, ok := gobj.(*types.TypeName)
-	if !ok {
-		return nil, fmt.Errorf("%s is not a named type in package %s", name, p)
-	}
-	return gtn, nil
-}
-
 type compiledThenSourceImporter struct {
 	defaultImporter types.Importer
 	sourceImporter  types.Importer
