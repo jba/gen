@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/tools/go/ast/astutil"
 )
 
 func astPackageFromPath(fset *token.FileSet, ipath, dir string) (*ast.Package, error) {
@@ -167,4 +169,67 @@ func extractBindingSpecs(cgroups []*ast.CommentGroup) ([]string, error) {
 		}
 	}
 	return result, nil
+}
+
+// trimImports removes unused imports from file.
+func trimImports(fset *token.FileSet, file *ast.File) {
+	for _, impgrp := range astutil.Imports(fset, file) {
+		for _, impspec := range impgrp {
+			path := importPath(impspec)
+			if !astutil.UsesImport(file, path) {
+				name := ""
+				if impspec.Name != nil {
+					name = impspec.Name.Name
+				}
+				astutil.DeleteNamedImport(fset, file, name, path)
+			}
+		}
+	}
+}
+
+func prefixTopLevelSymbols(file *ast.File, prefix string) {
+	pref := func(id *ast.Ident) {
+		fmt.Printf("id %q: object = %#v\n", id.Name, id.Obj)
+		id.Name = prefix + id.Name
+
+	}
+	topLevelObjs := map[*ast.Object]bool{}
+	for _, decl := range file.Decls {
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			pref(decl.Name)
+			topLevelObjs[decl.Name.Obj] = true
+		case *ast.GenDecl:
+			switch decl.Tok {
+			case token.IMPORT:
+				continue
+			case token.TYPE:
+				for _, spec := range decl.Specs {
+					id := spec.(*ast.TypeSpec).Name
+					pref(id)
+					topLevelObjs[id.Obj] = true
+				}
+			case token.CONST, token.VAR:
+				for _, spec := range decl.Specs {
+					for _, id := range spec.(*ast.ValueSpec).Names {
+						pref(id)
+						topLevelObjs[id.Obj] = true
+					}
+				}
+			default:
+				panic("bad token")
+			}
+		default:
+			panic("bad decl")
+		}
+	}
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok {
+			if topLevelObjs[id.Obj] {
+				pref(id)
+			}
+		}
+		return true
+	})
 }

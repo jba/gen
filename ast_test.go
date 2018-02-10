@@ -1,6 +1,7 @@
 package gen
 
 import (
+	"fmt"
 	"go/token"
 	"testing"
 
@@ -104,11 +105,7 @@ import (
 `,
 			want: &genericImport{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
 		}} {
-		fset := token.NewFileSet()
-		apkg, err := astPackage(fset, "<src>", test.src)
-		if err != nil {
-			t.Fatal(err)
-		}
+		fset, apkg := astPackage(test.src)
 		ids, err := parseComments(fset, apkg)
 		if err != nil {
 			if !test.wantErr {
@@ -135,4 +132,33 @@ import (
 			t.Errorf("%d: got %v, want %v", i, got, test.want)
 		}
 	}
+}
+
+func TestPrefixTopLevelSymbols(t *testing.T) {
+	src := `
+package p
+const foo = 1
+type T int
+var v T
+func f(foo T) T { var v = foo; return foo }
+func g(bar T) { v = bar }
+`
+	fset, apkg := astPackage(src)
+	file := singleFile(apkg)
+	prefixTopLevelSymbols(file, "pre_")
+	got := nodeString(file, fset)
+	want := `package p
+
+const pre_foo = 1
+
+type pre_T int
+
+var pre_v pre_T
+
+func pre_f(foo pre_T) pre_T { var v = foo; return foo }
+func pre_g(bar pre_T) { pre_v = bar }
+}
+`
+	fmt.Printf("got:\n%s\n", got)
+	fmt.Printf("want:\n%s\n", want)
 }
