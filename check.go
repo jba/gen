@@ -9,6 +9,7 @@ import (
 	"go/types"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -38,7 +39,7 @@ func Check(path, dir string, params []string) (*Package, error) {
 			env[p] = typ
 		}
 		// For each generic import, instantiate it with the types given by its binding specs.
-		// This may include the generic type params of the this package.
+		// This may include the generic type params of this package.
 		// Return a map from path type *types.Package that can be used to import the
 		// instantiated packages.
 		importMap, err = processGenericImports(genericImports, fset, dir, env)
@@ -79,8 +80,10 @@ func processGenericImports(gis []genericImport, fset *token.FileSet, dir string,
 	packages := map[string]*types.Package{}
 	for _, gi := range gis {
 		var params []string
+		var bsList []string
 		bspecs := map[string]string{}
-		for _, bs := range gi.bindingSpecs {
+		for bs := range gi.bindingSpecs {
+			bsList = append(bsList, bs)
 			param, arg, err := ParseBindingSpec(bs)
 			if err != nil {
 				return nil, err
@@ -88,7 +91,8 @@ func processGenericImports(gis []genericImport, fset *token.FileSet, dir string,
 			bspecs[param] = arg
 			params = append(params, param)
 		}
-		giPathParts := append([]string{"*generic*"}, gi.bindingSpecs...)
+		sort.Strings(bsList)
+		giPathParts := append([]string{"*generic*"}, bsList...)
 		genericImportPath := strings.Join(giPathParts, "/")
 		if packages[genericImportPath] == nil {
 			pkg, err := Check(gi.path, dir, params)

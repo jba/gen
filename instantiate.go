@@ -71,6 +71,17 @@ func newBindingList(bindings map[string]types.Type, pkg *Package) ([]*Binding, e
 
 // Modifies the asts in pkg. pkgName is the new package name.
 func substitutePackage(pkg *Package, bindings []*Binding, pkgName string) error {
+	rws := makeRewriteRules(bindings)
+	pkg.Apkg.Name = pkgName
+	for _, file := range pkg.Apkg.Files {
+		if err := substituteFile(file, bindings, rws, pkg, pkgName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func makeRewriteRules(bindings []*Binding) []rewrite {
 	var rws []rewrite
 	for _, b := range bindings {
 		for _, am := range augmentedMethods(b.arg) {
@@ -81,13 +92,7 @@ func substitutePackage(pkg *Package, bindings []*Binding, pkgName string) error 
 			})
 		}
 	}
-	pkg.Apkg.Name = pkgName
-	for _, file := range pkg.Apkg.Files {
-		if err := substituteFile(file, bindings, rws, pkg, pkgName); err != nil {
-			return err
-		}
-	}
-	return nil
+	return rws
 }
 
 // substituteFile changes the AST of file to reflect the bindings and rewrites.
@@ -165,17 +170,6 @@ func InstantiateInto(pkg *Package, prefix string, bindings map[string]types.Type
 }
 
 func substitutePackageInto(src *Package, bindings []*Binding, prefix string, dest *ast.Package) error {
-	var rws []rewrite
-	for _, b := range bindings {
-		for _, am := range augmentedMethods(b.arg) {
-			rws = append(rws, rewrite{
-				argType:    b.param.Type(),
-				methodName: am.name,
-				op:         am.tok,
-			})
-		}
-	}
-
 	// Remove filenames with prefix from dest, because they are from an earlier instantiation.
 	for filename := range dest.Files {
 		if strings.HasPrefix(filename, prefix) {
@@ -183,6 +177,12 @@ func substitutePackageInto(src *Package, bindings []*Binding, prefix string, des
 		}
 	}
 
+	// For each file in dest that imports src, replace references to the import identifier with
+	// prefixed symbols.
+
+	// Perform normal substitution on the files of src, and also prefix all top-level symbols.
+	// Add the modified files of src to dest.
+	rws := makeRewriteRules(bindings)
 	for filename, file := range src.Apkg.Files {
 		if err := substituteFile(file, bindings, rws, src, dest.Name); err != nil {
 			return err

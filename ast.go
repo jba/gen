@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -93,11 +94,15 @@ func importPath(s *ast.ImportSpec) string {
 type genericImport struct {
 	name         string
 	path         string
-	bindingSpecs []string
+	bindingSpecs map[string]bool
 	spec         *ast.ImportSpec
 }
 
-func parseComments(fset *token.FileSet, p *ast.Package) ([]genericImport, error) {
+func (g1 genericImport) SamePathAndBindings(g2 genericImport) bool {
+	return g1.path == g2.path && reflect.DeepEqual(g1.bindingSpecs, g2.bindingSpecs)
+}
+
+func genericImports(fset *token.FileSet, p *ast.Package) ([]genericImport, error) {
 	var ids []genericImport
 	var err error
 	for _, file := range p.Files {
@@ -135,7 +140,7 @@ func parseComments(fset *token.FileSet, p *ast.Package) ([]genericImport, error)
 					name:         ispec.Name.Name,
 					path:         importPath(ispec),
 					bindingSpecs: bspecs,
-					spec:         ispec,
+					//spec:         ispec,
 				})
 				return false
 			}
@@ -145,9 +150,9 @@ func parseComments(fset *token.FileSet, p *ast.Package) ([]genericImport, error)
 	return ids, err
 }
 
-func extractBindingSpecs(cgroups []*ast.CommentGroup) ([]string, error) {
+func extractBindingSpecs(cgroups []*ast.CommentGroup) (map[string]bool, error) {
 	const directiveName = "gen:import"
-	var result []string
+	var list []string
 	for _, g := range cgroups {
 		if g == nil {
 			continue
@@ -161,12 +166,19 @@ func extractBindingSpecs(cgroups []*ast.CommentGroup) ([]string, error) {
 			if fields[0] != directiveName {
 				continue
 			}
-			if result != nil {
+			if list != nil {
 				return nil, fmt.Errorf("more than one associated set of bindings: %v and %v",
-					result, fields[1:])
+					list, fields[1:])
 			}
-			result = fields[1:]
+			list = fields[1:]
 		}
+	}
+	if len(list) == 0 {
+		return nil, nil
+	}
+	result := map[string]bool{}
+	for _, bs := range list {
+		result[bs] = true
 	}
 	return result, nil
 }

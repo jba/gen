@@ -70,7 +70,7 @@ package p
 
 import foo "bar" // gen:import X:Y
 `,
-			want: &genericImport{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+			want: &genericImport{name: "foo", path: "bar", bindingSpecs: map[string]bool{"X:Y": true}},
 		},
 		{
 			src: `
@@ -79,7 +79,7 @@ package p
 // gen:import X:Y
 import foo "bar"
 `,
-			want: &genericImport{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+			want: &genericImport{name: "foo", path: "bar", bindingSpecs: map[string]bool{"X:Y": true}},
 		},
 		{
 			src: `
@@ -91,7 +91,7 @@ import (
 	foo "bar" // gen:import X:Y
 )
 `,
-			want: &genericImport{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+			want: &genericImport{name: "foo", path: "bar", bindingSpecs: map[string]bool{"X:Y": true}},
 		},
 		{
 			src: `
@@ -105,7 +105,7 @@ import (
 	foo "bar"
 )
 `,
-			want: &genericImport{name: "foo", path: "bar", bindingSpecs: []string{"X:Y"}},
+			want: &genericImport{name: "foo", path: "bar", bindingSpecs: map[string]bool{"X:Y": true}},
 		}} {
 		fset, apkg := astPackage(test.src)
 		ids, err := parseComments(fset, apkg)
