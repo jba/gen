@@ -148,7 +148,7 @@ func replaceCode(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *P
 					continue
 				}
 				if !types.Identical(pkg.info.Types[n.Type].Type, b.arg) {
-					err = fmt.Errorf("%s: failed type assertion", pkg.Fset.Position(n.Pos()))
+					err = fmt.Errorf("%s: failed type assertion", pkg.position(n.Pos()))
 					return false
 				}
 				c.Replace(n.X)

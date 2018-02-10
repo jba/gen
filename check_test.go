@@ -105,7 +105,7 @@ package p
 type T1 interface{}
 type T2 interface { Less(T2) bool }
 `
-	_, apkg := astPackage(src)
+	apkg := astPackageFromSource(src)
 	got, err := paramTypeFromAST("T1", apkg)
 	if err != nil {
 		t.Fatal(err)
@@ -151,23 +151,26 @@ func newNamedType(name string, t types.Type) types.Type {
 }
 
 func packageFromSource(src string) *Package {
-	fset, apkg := astPackage(src)
-	pkg, err := makePackage("<path>", fset, apkg, theImporter)
+	apkg := astPackageFromSource(src)
+	pkg, err := makePackage("<path>", apkg, theImporter)
 	if err != nil {
 		panic(fmt.Sprintf("%s: %v", src, err))
 	}
 	return pkg
 }
 
-func astPackage(src interface{}) (*token.FileSet, *ast.Package) {
+func astPackageFromSource(src interface{}) *astPackage {
 	const filename = "<src>"
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
 	if err != nil {
 		panic(err)
 	}
-	return fset, &ast.Package{
-		Name:  file.Name.Name,
-		Files: map[string]*ast.File{filename: file},
+	return &astPackage{
+		pkg: &ast.Package{
+			Name:  file.Name.Name,
+			Files: map[string]*ast.File{filename: file},
+		},
+		fset: fset,
 	}
 }

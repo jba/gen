@@ -65,7 +65,7 @@ func newBinding(paramName string, argType types.Type, pkg *Package) (*Binding, e
 		return nil, err
 	}
 	if err := checkBinding(gtn.Type(), argType); err != nil {
-		return nil, fmt.Errorf("%s: %v", pkg.Fset.Position(gtn.Pos()), err)
+		return nil, fmt.Errorf("%s: %v", pkg.position(gtn.Pos()), err)
 	}
 	return &Binding{
 		param: gtn,

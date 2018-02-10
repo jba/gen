@@ -280,7 +280,7 @@ func TestReplaceCode(t *testing.T) {
 			type I interface{}
 	    ` + test.in
 		pkg := packageFromSource(code)
-		file := singleFile(pkg.Apkg)
+		file := singleFile(pkg.Apkg.pkg)
 		ptype := topLevelType("T", pkg)
 		var rewrites []rewrite
 		for _, am := range append([]augmentMethod{equalMethod}, orderedMethods...) {
@@ -300,7 +300,7 @@ func TestReplaceCode(t *testing.T) {
 			}
 			t.Fatal(err)
 		}
-		got := nodeString(file.Scope.Lookup("f").Decl, pkg.Fset)
+		got := nodeString(file.Scope.Lookup("f").Decl, pkg.Apkg.fset)
 		if trim(got) != trim(test.want) {
 			t.Errorf("-- got --\n%s\n-- want --\n%s", got, test.want)
 			t.Logf("trim(got):  %q\n", trim(got))

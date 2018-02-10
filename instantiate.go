@@ -44,11 +44,11 @@ func Instantiate(pkg *Package, pkgName string, bindings map[string]types.Type) e
 			return fmt.Errorf("no type parameter %s in %s", b.param, pkg.Path)
 		}
 	}
-	pkg.Fset, pkg.Apkg, err = reloadAST(pkg.Fset, pkg.Apkg)
+	pkg.Apkg, err = pkg.Apkg.reload()
 	if err != nil {
 		return err
 	}
-	tpkg, info, err := typecheckPackage("dummy_import_path/"+pkgName, pkg.Fset, pkg.Apkg, theImporter)
+	tpkg, info, err := typecheckPackage("dummy_import_path/"+pkgName, pkg.Apkg, theImporter)
 	if err != nil {
 		return err
 	}
@@ -72,8 +72,8 @@ func newBindingList(bindings map[string]types.Type, pkg *Package) ([]*Binding, e
 // Modifies the asts in pkg. pkgName is the new package name.
 func substitutePackage(pkg *Package, bindings []*Binding, pkgName string) error {
 	rws := makeRewriteRules(bindings)
-	pkg.Apkg.Name = pkgName
-	for _, file := range pkg.Apkg.Files {
+	pkg.Apkg.pkg.Name = pkgName
+	for _, file := range pkg.Apkg.pkg.Files {
 		if err := substituteFile(file, bindings, rws, pkg, pkgName); err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func substituteFile(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg
 			if name == path.Base(ipath) {
 				name = ""
 			}
-			astutil.AddNamedImport(pkg.Fset, file, name, ipath)
+			astutil.AddNamedImport(pkg.Apkg.fset, file, name, ipath)
 		}
 		// Turn the type spec into an alias if it isn't already.
 		if !typeSpec.Assign.IsValid() {
@@ -124,7 +124,7 @@ func substituteFile(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg
 	if err := replaceCode(file, bindings, rewrites, pkg); err != nil {
 		return err
 	}
-	trimImports(pkg.Fset, file)
+	trimImports(pkg.Apkg.fset, file)
 	return nil
 }
 
@@ -183,7 +183,7 @@ func substitutePackageInto(src *Package, bindings []*Binding, prefix string, des
 	// Perform normal substitution on the files of src, and also prefix all top-level symbols.
 	// Add the modified files of src to dest.
 	rws := makeRewriteRules(bindings)
-	for filename, file := range src.Apkg.Files {
+	for filename, file := range src.Apkg.pkg.Files {
 		if err := substituteFile(file, bindings, rws, src, dest.Name); err != nil {
 			return err
 		}

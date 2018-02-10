@@ -10,13 +10,12 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func TestReloadAST(t *testing.T) {
-	fset := token.NewFileSet()
-	apkg, err := astPackageFromPath(fset, "github.com/jba/gen/examples/nested", "")
+func TestReload(t *testing.T) {
+	apkg, err := astPackageFromPath("github.com/jba/gen/examples/nested", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = reloadAST(fset, apkg)
+	_, err = apkg.reload()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +106,8 @@ import (
 `,
 			want: &genericImport{name: "foo", path: "bar", bindingSpecs: map[string]bool{"X:Y": true}},
 		}} {
-		fset, apkg := astPackage(test.src)
-		ids, err := parseComments(fset, apkg)
+		apkg := astPackageFromSource(test.src)
+		ids, err := parseComments(apkg.fset, apkg.pkg)
 		if err != nil {
 			if !test.wantErr {
 				t.Fatalf("%d: %v", i, err)
@@ -146,10 +145,10 @@ func f(foo T) T { var v = foo; return foo }
 
 func g(bar T) { type T bool; v = bar }
 `
-	fset, apkg := astPackage(src)
-	file := singleFile(apkg)
+	apkg := astPackageFromSource(src)
+	file := singleFile(apkg.pkg)
 	prefixTopLevelSymbols(file, "pre_")
-	got := nodeString(file, fset)
+	got := nodeString(file, apkg.fset)
 	want := `package p
 
 const pre_foo = 1

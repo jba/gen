@@ -16,15 +16,22 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-func astPackageFromPath(fset *token.FileSet, ipath, dir string) (*ast.Package, error) {
+type astPackage struct {
+	pkg            *ast.Package
+	fset           *token.FileSet
+	genericImports []genericImport
+}
+
+func astPackageFromPath(ipath, dir string) (*astPackage, error) {
 	bpkg, err := build.Import(ipath, dir, build.FindOnly)
 	if err != nil {
 		return nil, err
 	}
-	return astPackageFromDir(fset, bpkg.Dir)
+	return astPackageFromDir(bpkg.Dir)
 }
 
-func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
+func astPackageFromDir(dir string) (*astPackage, error) {
+	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, dir, nil, parser.ParseComments|parser.AllErrors)
 	if err != nil {
 		return nil, err
@@ -47,12 +54,20 @@ func astPackageFromDir(fset *token.FileSet, dir string) (*ast.Package, error) {
 			delete(apkg.Files, filename)
 		}
 	}
-	return apkg, nil
+	gis, err := parseComments(fset, apkg)
+	if err != nil {
+		return nil, err
+	}
+	return &astPackage{
+		pkg:            apkg,
+		fset:           fset,
+		genericImports: gis,
+	}, nil
 }
 
-func lookupTopLevel(apkg *ast.Package, name string) *ast.Object {
-	// apkg.Scope is nil (bug in ast package?)
-	for _, f := range apkg.Files {
+func (a *astPackage) lookupTopLevel(name string) *ast.Object {
+	// a.pkg.Scope is nil (bug in ast package?)
+	for _, f := range a.pkg.Files {
 		if obj := f.Scope.Objects[name]; obj != nil {
 			return obj
 		}
@@ -60,24 +75,32 @@ func lookupTopLevel(apkg *ast.Package, name string) *ast.Object {
 	return nil
 }
 
-func reloadAST(fset *token.FileSet, apkg *ast.Package) (*token.FileSet, *ast.Package, error) {
+func (a *astPackage) reload() (*astPackage, error) {
 	fset2 := token.NewFileSet()
 	apkg2 := &ast.Package{
-		Name:  apkg.Name,
+		Name:  a.pkg.Name,
 		Files: make(map[string]*ast.File),
 	}
-	for filename, file := range apkg.Files {
+	for filename, file := range a.pkg.Files {
 		var buf bytes.Buffer
-		if err := format.Node(&buf, fset, file); err != nil {
-			return nil, nil, err
+		if err := format.Node(&buf, a.fset, file); err != nil {
+			return nil, err
 		}
 		file2, err := parser.ParseFile(fset2, filename, &buf, parser.ParseComments)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		apkg2.Files[filename] = file2
 	}
-	return fset2, apkg2, nil
+	gis, err := parseComments(fset2, apkg2)
+	if err != nil {
+		return nil, err
+	}
+	return &astPackage{
+		pkg:            apkg2,
+		fset:           fset2,
+		genericImports: gis,
+	}, nil
 }
 
 // importPath returns the unquoted import path of s,
@@ -98,11 +121,11 @@ type genericImport struct {
 	spec         *ast.ImportSpec
 }
 
-func (g1 genericImport) SamePathAndBindings(g2 genericImport) bool {
+func (g1 genericImport) samePathAndBindings(g2 genericImport) bool {
 	return g1.path == g2.path && reflect.DeepEqual(g1.bindingSpecs, g2.bindingSpecs)
 }
 
-func genericImports(fset *token.FileSet, p *ast.Package) ([]genericImport, error) {
+func parseComments(fset *token.FileSet, p *ast.Package) ([]genericImport, error) {
 	var ids []genericImport
 	var err error
 	for _, file := range p.Files {

@@ -18,18 +18,12 @@ import (
 // the first error it finds.
 func Check(path, dir string, params []string) (*Package, error) {
 	// Parse the generic package.
-	fset := token.NewFileSet()
-	apkg, err := astPackageFromPath(fset, path, dir)
-	if err != nil {
-		return nil, err
-	}
-	// Handle import directives by recursively instantiating the types.
-	genericImports, err := parseComments(fset, apkg)
+	apkg, err := astPackageFromPath(path, dir)
 	if err != nil {
 		return nil, err
 	}
 	var importMap map[string]*types.Package
-	if len(genericImports) > 0 {
+	if len(apkg.genericImports) > 0 {
 		env := map[string]types.Type{}
 		for _, p := range params {
 			typ, err := paramTypeFromAST(p, apkg)
@@ -42,19 +36,19 @@ func Check(path, dir string, params []string) (*Package, error) {
 		// This may include the generic type params of this package.
 		// Return a map from path type *types.Package that can be used to import the
 		// instantiated packages.
-		importMap, err = processGenericImports(genericImports, fset, dir, env)
+		importMap, err = processGenericImports(apkg.genericImports, apkg.fset, dir, env)
 		if err != nil {
 			return nil, err
 		}
 		// We changed the AST, so the fset will be wrong. Reload.
-		fset, apkg, err = reloadAST(fset, apkg)
+		apkg, err = apkg.reload()
 		if err != nil {
 			return nil, err
 		}
 	}
 	// Typecheck the package.
 	importer := mapImporter{importMap, theImporter}
-	pkg, err := makePackage(path, fset, apkg, importer)
+	pkg, err := makePackage(path, apkg, importer)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +60,7 @@ func Check(path, dir string, params []string) (*Package, error) {
 			return nil, err
 		}
 		if err := checkParam(gtn, pkg); err != nil {
-			return nil, fmt.Errorf("%s: %v", pkg.Fset.Position(gtn.Pos()), err)
+			return nil, fmt.Errorf("%s: %v", pkg.position(gtn.Pos()), err)
 		}
 	}
 	return pkg, nil
@@ -118,9 +112,9 @@ func processGenericImports(gis []genericImport, fset *token.FileSet, dir string,
 	return packages, nil
 }
 
-func typecheckPackage(path string, fset *token.FileSet, apkg *ast.Package, importer types.Importer) (*types.Package, *types.Info, error) {
+func typecheckPackage(path string, apkg *astPackage, importer types.Importer) (*types.Package, *types.Info, error) {
 	var files []*ast.File
-	for _, file := range apkg.Files {
+	for _, file := range apkg.pkg.Files {
 		files = append(files, file)
 	}
 	info := &types.Info{
@@ -131,21 +125,20 @@ func typecheckPackage(path string, fset *token.FileSet, apkg *ast.Package, impor
 		Importer:                 importer,
 		DisableUnusedImportCheck: true,
 	}
-	tpkg, err := config.Check(path, fset, files, info)
+	tpkg, err := config.Check(path, apkg.fset, files, info)
 	if err != nil {
 		return nil, nil, fmt.Errorf("typechecker on %s: %v", path, err)
 	}
 	return tpkg, info, nil
 }
 
-func makePackage(path string, fset *token.FileSet, apkg *ast.Package, importer types.Importer) (*Package, error) {
-	tpkg, info, err := typecheckPackage(path, fset, apkg, importer)
+func makePackage(path string, apkg *astPackage, importer types.Importer) (*Package, error) {
+	tpkg, info, err := typecheckPackage(path, apkg, importer)
 	if err != nil {
 		return nil, err
 	}
 	return &Package{
 		Path: path,
-		Fset: fset,
 		Apkg: apkg,
 		Tpkg: tpkg,
 		info: info,
@@ -153,9 +146,9 @@ func makePackage(path string, fset *token.FileSet, apkg *ast.Package, importer t
 }
 
 type Package struct {
-	Path   string
-	Fset   *token.FileSet
-	Apkg   *ast.Package
+	Path string
+
+	Apkg   *astPackage
 	Tpkg   *types.Package
 	Params []string
 	info   *types.Info
@@ -163,6 +156,10 @@ type Package struct {
 
 func (p *Package) String() string {
 	return fmt.Sprintf("%s (%s)", p.Tpkg.Name(), p.Tpkg.Path())
+}
+
+func (p *Package) position(pos token.Pos) token.Position {
+	return p.Apkg.fset.Position(pos)
 }
 
 func (p *Package) topLevelTypeName(name string) (*types.TypeName, error) {
@@ -210,13 +207,13 @@ func (mi mapImporter) Import(path string) (*types.Package, error) {
 	return mi.imp.Import(path)
 }
 
-func paramTypeFromAST(paramName string, apkg *ast.Package) (types.Type, error) {
-	obj := lookupTopLevel(apkg, paramName)
+func paramTypeFromAST(paramName string, apkg *astPackage) (types.Type, error) {
+	obj := apkg.lookupTopLevel(paramName)
 	if obj == nil {
-		return nil, fmt.Errorf("no top-level name %q in package %s", paramName, apkg.Name)
+		return nil, fmt.Errorf("no top-level name %q in package %s", paramName, apkg.pkg.Name)
 	}
 	if obj.Kind != ast.Typ {
-		return nil, fmt.Errorf("%q is not a type in package %s", paramName, apkg.Name)
+		return nil, fmt.Errorf("%q is not a type in package %s", paramName, apkg.pkg.Name)
 	}
 	spec, ok := obj.Decl.(*ast.TypeSpec)
 	if !ok {
@@ -424,7 +421,7 @@ func checkSpecialInterface(name string, gtn *types.TypeName, iface *types.Interf
 	has := implementsSpecialInterface(iface, name)
 	if node != nil && !has {
 		return fmt.Sprintf("param %s does not implement gen.%s, but it is required at %s",
-			gtn.Name(), name, pkg.Fset.Position(node.Pos()))
+			gtn.Name(), name, pkg.position(node.Pos()))
 	}
 	if node == nil && has {
 		log.Printf("param %s includes gen.%s, but does not need it", gtn.Name(), name)
@@ -450,7 +447,7 @@ func comparableNode(t types.Type, pkg *Package) ast.Node {
 		return pkg.info.Types[e].Type
 	}
 	var result ast.Node
-	for _, file := range pkg.Apkg.Files {
+	for _, file := range pkg.Apkg.pkg.Files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			if needsComparable(n, t, typeOf) {
 				result = n
@@ -603,7 +600,7 @@ func nillableNode(t types.Type, pkg *Package) ast.Node {
 		return vf
 	}
 
-	for _, file := range pkg.Apkg.Files {
+	for _, file := range pkg.Apkg.pkg.Files {
 		ast.Walk(withSig(nil), file)
 		if result != nil {
 			return result
