@@ -1,7 +1,6 @@
 package gen
 
 import (
-	"fmt"
 	"go/token"
 	"testing"
 
@@ -141,7 +140,8 @@ const foo = 1
 type T int
 var v T
 func f(foo T) T { var v = foo; return foo }
-func g(bar T) { v = bar }
+
+func g(bar T) { type T bool; v = bar }
 `
 	fset, apkg := astPackage(src)
 	file := singleFile(apkg)
@@ -156,9 +156,10 @@ type pre_T int
 var pre_v pre_T
 
 func pre_f(foo pre_T) pre_T { var v = foo; return foo }
-func pre_g(bar pre_T) { pre_v = bar }
-}
+
+func pre_g(bar pre_T) { type T bool; pre_v = bar }
 `
-	fmt.Printf("got:\n%s\n", got)
-	fmt.Printf("want:\n%s\n", want)
+	if got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
 }

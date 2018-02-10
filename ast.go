@@ -189,32 +189,25 @@ func trimImports(fset *token.FileSet, file *ast.File) {
 
 func prefixTopLevelSymbols(file *ast.File, prefix string) {
 	pref := func(id *ast.Ident) {
-		fmt.Printf("id %q: object = %#v\n", id.Name, id.Obj)
 		id.Name = prefix + id.Name
 
 	}
-	topLevelObjs := map[*ast.Object]bool{}
+	topLevelDecls := map[interface{}]bool{}
 	for _, decl := range file.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
-			pref(decl.Name)
-			topLevelObjs[decl.Name.Obj] = true
+			topLevelDecls[decl] = true
 		case *ast.GenDecl:
 			switch decl.Tok {
 			case token.IMPORT:
 				continue
 			case token.TYPE:
 				for _, spec := range decl.Specs {
-					id := spec.(*ast.TypeSpec).Name
-					pref(id)
-					topLevelObjs[id.Obj] = true
+					topLevelDecls[spec] = true
 				}
 			case token.CONST, token.VAR:
 				for _, spec := range decl.Specs {
-					for _, id := range spec.(*ast.ValueSpec).Names {
-						pref(id)
-						topLevelObjs[id.Obj] = true
-					}
+					topLevelDecls[spec] = true
 				}
 			default:
 				panic("bad token")
@@ -225,10 +218,8 @@ func prefixTopLevelSymbols(file *ast.File, prefix string) {
 	}
 
 	ast.Inspect(file, func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok {
-			if topLevelObjs[id.Obj] {
-				pref(id)
-			}
+		if id, ok := n.(*ast.Ident); ok && id.Obj != nil && topLevelDecls[id.Obj.Decl] {
+			pref(id)
 		}
 		return true
 	})
