@@ -8,6 +8,8 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"log"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -17,6 +19,7 @@ import (
 )
 
 type astPackage struct {
+	dir            string
 	pkg            *ast.Package
 	fset           *token.FileSet
 	genericImports []genericImport
@@ -49,16 +52,25 @@ func astPackageFromDir(dir string) (*astPackage, error) {
 			return nil, fmt.Errorf("can't find package %q in directory %q", pkgName, dir)
 		}
 	}
+	return newASTPackage(dir, fset, apkg, true)
+}
+
+func newASTPackage(dir string, fset *token.FileSet, apkg *ast.Package, parseComms bool) (*astPackage, error) {
 	for filename := range apkg.Files {
 		if strings.HasSuffix(filename, "_test.go") {
 			delete(apkg.Files, filename)
 		}
 	}
-	gis, err := parseComments(fset, apkg)
-	if err != nil {
-		return nil, err
+	var gis []genericImport
+	if parseComms {
+		var err error
+		gis, err = parseComments(fset, apkg)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &astPackage{
+		dir:            dir,
 		pkg:            apkg,
 		fset:           fset,
 		genericImports: gis,
@@ -99,6 +111,24 @@ func (a *astPackage) reload() error {
 	a.fset = fset2
 	a.pkg = apkg2
 	a.genericImports = gis
+	return nil
+}
+
+func (a *astPackage) write(dir string) error {
+	for filename, file := range a.pkg.Files {
+		outfile := filepath.Join(dir, filepath.Base(filename))
+		f, err := os.Create(outfile)
+		if err != nil {
+			return err
+		}
+		if err := format.Node(f, a.fset, file); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -226,13 +256,16 @@ func trimImports(fset *token.FileSet, file *ast.File) {
 func prefixTopLevelSymbols(file *ast.File, prefix string) {
 	pref := func(id *ast.Ident) {
 		id.Name = prefix + id.Name
-
 	}
+
+	// Create a set of the top-level decls.
 	topLevelDecls := map[interface{}]bool{}
 	for _, decl := range file.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
-			topLevelDecls[decl] = true
+			if decl.Name.Name != "init" { // don't prefix init functions
+				topLevelDecls[decl] = true
+			}
 		case *ast.GenDecl:
 			switch decl.Tok {
 			case token.IMPORT:
@@ -252,21 +285,30 @@ func prefixTopLevelSymbols(file *ast.File, prefix string) {
 			panic("bad decl")
 		}
 	}
-
+	// Prefix any identifier that refers to a top-level decl.
 	ast.Inspect(file, func(n ast.Node) bool {
 		if id, ok := n.(*ast.Ident); ok && id.Obj != nil && topLevelDecls[id.Obj.Decl] {
 			pref(id)
 		}
 		return true
 	})
+
+}
+
+func nodeString(n interface{}, fset *token.FileSet) string {
+	var buf bytes.Buffer
+	if err := format.Node(&buf, fset, n); err != nil {
+		log.Fatal(err)
+	}
+	return buf.String()
 }
 
 func replaceImportWithPrefix(file *ast.File, importID, prefix string) {
 	pre := func(c *astutil.Cursor) bool {
 		if sel, ok := c.Node().(*ast.SelectorExpr); ok {
-			// If the X expression is an identifier without an Obj, assume
-			// it refers to an import.
-			// TODO: verify that.
+			// If the X expression is an identifier without an Obj, assume it refers
+			// to an import.
+			// TODO: verify the above.
 			if id, ok := sel.X.(*ast.Ident); ok && id.Obj == nil && id.Name == importID {
 				c.Replace(&ast.Ident{Name: prefix + sel.Sel.Name})
 			}

@@ -1,9 +1,12 @@
 package gen
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/types"
+	"strings"
 )
 
 func dumpTypeSpec(ts *ast.TypeSpec, info *types.Info) {
@@ -86,5 +89,21 @@ func dumpCommentGroup(cg *ast.CommentGroup) {
 	}
 	for _, c := range cg.List {
 		fmt.Printf("%q\n", c.Text)
+	}
+}
+
+func (a *astPackage) dump(msg string) {
+	fmt.Printf("======== %s ========\n", msg)
+	for filename, file := range a.pkg.Files {
+		fmt.Printf("---- %s ----\n", filename)
+		var buf bytes.Buffer
+		if err := format.Node(&buf, a.fset, file); err != nil {
+			panic(err)
+		}
+		s := buf.String()
+		lines := strings.Split(s, "\n")
+		for i, line := range lines {
+			fmt.Printf("%2d: %s\n", i+1, line)
+		}
 	}
 }

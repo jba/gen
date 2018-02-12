@@ -12,6 +12,24 @@ import (
 	"testing"
 )
 
+var stackSrc = `
+package stack
+
+type T interface{}
+
+type Stack struct { items []T }
+
+func (s *Stack) Push(x T) { s.items = append(s.items, x) }
+`
+
+func TestCheck(t *testing.T) {
+	apkg := astPackageFromSource(stackSrc)
+	_, err := checkPackage(apkg, "PATH", "DIR", []string{"T"})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDirToImportPath(t *testing.T) {
 	got := dirToImportPath(os.Getenv("HOME") + "/go/src/github.com/jba")
 	want := "github.com/jba"
@@ -160,17 +178,23 @@ func packageFromSource(src string) *Package {
 }
 
 func astPackageFromSource(src interface{}) *astPackage {
+	return astPkgFromSrc(src, true)
+}
+
+func astPkgFromSrc(src interface{}, parseComments bool) *astPackage {
 	const filename = "<src>"
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
 	if err != nil {
 		panic(err)
 	}
-	return &astPackage{
-		pkg: &ast.Package{
-			Name:  file.Name.Name,
-			Files: map[string]*ast.File{filename: file},
-		},
-		fset: fset,
+	apkg := &ast.Package{
+		Name:  file.Name.Name,
+		Files: map[string]*ast.File{filename: file},
 	}
+	p, err := newASTPackage("<dir>", fset, apkg, parseComments)
+	if err != nil {
+		panic(err)
+	}
+	return p
 }

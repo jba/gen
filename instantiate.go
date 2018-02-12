@@ -1,30 +1,18 @@
 package gen
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
+	"go/parser"
 	"go/types"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/ast/astutil"
 )
-
-// TODO: make sure that for in-package instantiation, all import path aliases are identical.>
-
-// // InstantiatePath instantiates the generic package at the given import path (relative to pdir).
-// // The bindings are a map from generic parameter name to the instantiated type of the parameter.
-// func InstantiatePath(path, pdir, outputName string, bindings map[string]types.Type) error {
-// 	var params []string
-// 	for p := range bindingMap {
-// 		params = append(params, p)
-// 	}
-// 	pkg, err := CheckPath(path, pdir, params)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return Instantiate(pkg, outputName, bindingMap)
-// }
 
 // Instantiate instantiates the generic package, giving the resulting package the given name.
 // The bindings are a map from generic parameter name to the instantiated type of the parameter.
@@ -73,7 +61,7 @@ func substitutePackage(pkg *Package, bindings []*Binding, pkgName string) error 
 	rws := makeRewriteRules(bindings)
 	pkg.Apkg.pkg.Name = pkgName
 	for _, file := range pkg.Apkg.pkg.Files {
-		if err := substituteFile(file, bindings, rws, pkg, pkgName); err != nil {
+		if err := substituteFile(file, bindings, rws, pkg, pkgName, true); err != nil {
 			return err
 		}
 	}
@@ -95,23 +83,25 @@ func makeRewriteRules(bindings []*Binding) []rewrite {
 }
 
 // substituteFile changes the AST of file to reflect the bindings and rewrites.
-func substituteFile(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *Package, pkgName string) error {
+func substituteFile(file *ast.File, bindings []*Binding, rewrites []rewrite, pkg *Package, pkgName string, addImports bool) error {
 	for _, b := range bindings {
 		typeSpec := findTypeDecl(b.param, file)
 		if typeSpec == nil {
 			continue
 		}
 		b.found = true
-		// Add an import for the argument type if necessary.
-		// TODO: the named type from another package might be embedded in the type, like map[int]geo.Point.
-		if named, ok := b.arg.(*types.Named); ok {
-			tn := named.Obj()
-			name := tn.Pkg().Name()
-			ipath := tn.Pkg().Path()
-			if name == path.Base(ipath) {
-				name = ""
+		if addImports {
+			// Add an import for the argument type if necessary.
+			// TODO: the named type from another package might be embedded in the type, like map[int]geo.Point.
+			if named, ok := b.arg.(*types.Named); ok {
+				tn := named.Obj()
+				name := tn.Pkg().Name()
+				ipath := tn.Pkg().Path()
+				if name == path.Base(ipath) {
+					name = ""
+				}
+				astutil.AddNamedImport(pkg.Apkg.fset, file, name, ipath)
 			}
-			astutil.AddNamedImport(pkg.Apkg.fset, file, name, ipath)
 		}
 		// Turn the type spec into an alias if it isn't already.
 		if !typeSpec.Assign.IsValid() {
@@ -137,17 +127,11 @@ func findTypeDecl(param *types.TypeName, file *ast.File) *ast.TypeSpec {
 	return paramPath[1].(*ast.TypeSpec)
 }
 
-// InstantiateInto instantiates generic package gpkg into the package dest.
+// instantiateInto instantiates generic package gpkg into the package dest.
 // The filenames and symbols of pkg are prefixed with the generic import's name.
 // gpkg's AST is messed up afterwards.
 // TODO: name collisions between the new names we create and existing names in dest (including filenames).
-func InstantiateInto(gpkg *Package, gimp genericImport, bindings map[string]types.Type, dest *astPackage) error {
-	// Check that all equivalent generic imports use the same name. We depend on that fact when rewriting.
-	for _, gi := range gpkg.Apkg.genericImports {
-		if gi.samePathAndBindings(gimp) && gi.name != gimp.name {
-			return fmt.Errorf("different names for same generic import: %q and %q", gi.name, gimp.name)
-		}
-	}
+func instantiateInto(gpkg *Package, gimp genericImport, bindings map[string]types.Type, dest *astPackage) error {
 	bindingList, err := newBindingList(bindings, gpkg)
 	if err != nil {
 		return err
@@ -161,19 +145,6 @@ func InstantiateInto(gpkg *Package, gimp genericImport, bindings map[string]type
 		}
 	}
 	return dest.reload()
-
-	// var err error
-	// pkg.Fset, pkg.Apkg, err = reloadAST(pkg.Fset, pkg.Apkg)
-	// if err != nil {
-	// 	return err
-	// }
-	// tpkg, info, err := typecheckPackage("dummy_import_path/"+name, pkg.Fset, pkg.Apkg, theImporter)
-	// if err != nil {
-	// 	return err
-	// }
-	// pkg.Tpkg = tpkg
-	// pkg.info = info
-	// return nil
 }
 
 func substitutePackageInto(src *Package, bindings []*Binding, gimp genericImport, dest *astPackage) error {
@@ -188,9 +159,13 @@ func substitutePackageInto(src *Package, bindings []*Binding, gimp genericImport
 	// prefixed symbols.
 	// We already checked that all generic imports matching gimp use the same name.
 	for _, gi := range dest.genericImports {
-		if gi.name != gimp.name {
-			//astutil.DeleteNamedImport(dest.fset, gi.file, gi.name, gi.path)
+		if gi.name == gimp.name {
 			replaceImportWithPrefix(gi.file, gimp.name, prefix)
+			cmap := ast.NewCommentMap(dest.fset, gi.file, gi.file.Comments)
+			// TODO: Instead of deleting the import, comment it out. That will
+			// preserve line numbers in error messages.
+			astutil.DeleteNamedImport(dest.fset, gi.file, gi.name, gi.path)
+			gi.file.Comments = cmap.Filter(gi.file).Comments()
 		}
 	}
 
@@ -198,11 +173,31 @@ func substitutePackageInto(src *Package, bindings []*Binding, gimp genericImport
 	// Add the modified files of src to dest.
 	rws := makeRewriteRules(bindings)
 	for filename, file := range src.Apkg.pkg.Files {
-		if err := substituteFile(file, bindings, rws, src, dest.pkg.Name); err != nil {
+		if err := substituteFileInto(filename, file, bindings, rws, src, dest, prefix); err != nil {
 			return err
 		}
-		prefixTopLevelSymbols(file, prefix)
-		dest.pkg.Files[prefix+filename] = file
 	}
+	return nil
+}
+
+func substituteFileInto(filename string, file *ast.File, bindings []*Binding, rewrites []rewrite, src *Package, dest *astPackage, prefix string) error {
+	if err := substituteFile(file, bindings, rewrites, src, dest.pkg.Name, false); err != nil {
+		return err
+	}
+	prefixTopLevelSymbols(file, prefix)
+	// Format file with the src FileSet, then parse it with the dest FileSet. If
+	// we don't do this before we add file to dest, then its positions are
+	// interpreted relative to the wrong FileSet, and that can actually result in
+	// syntactically invalid code.
+	var buf bytes.Buffer
+	if err := format.Node(&buf, src.Apkg.fset, file); err != nil {
+		return err
+	}
+	newFilename := filepath.Join(dest.dir, prefix+filepath.Base(filename))
+	newFile, err := parser.ParseFile(dest.fset, newFilename, &buf, parser.ParseComments)
+	if err != nil {
+		return err
+	}
+	dest.pkg.Files[newFilename] = newFile
 	return nil
 }

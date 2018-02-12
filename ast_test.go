@@ -105,7 +105,7 @@ import (
 `,
 			want: &genericImport{name: "foo", path: "bar", bindingSpecs: map[string]bool{"X:Y": true}},
 		}} {
-		apkg := astPackageFromSource(test.src)
+		apkg := astPkgFromSrc(test.src, false)
 		ids, err := parseComments(apkg.fset, apkg.pkg)
 		if err != nil {
 			if !test.wantErr {

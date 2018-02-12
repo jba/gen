@@ -2,11 +2,8 @@ package gen
 
 import (
 	"fmt"
-	"go/format"
 	"go/token"
 	"go/types"
-	"os"
-	"path/filepath"
 )
 
 type Package struct {
@@ -44,19 +41,5 @@ func (p *Package) topLevelTypeName(name string) (*types.TypeName, error) {
 
 // Write writes the files of p to the directory dir. The directory must already exist.
 func (p *Package) Write(dir string) error {
-	for filename, file := range p.Apkg.pkg.Files {
-		outfile := filepath.Join(dir, filepath.Base(filename))
-		f, err := os.Create(outfile)
-		if err != nil {
-			return err
-		}
-		if err := format.Node(f, p.Apkg.fset, file); err != nil {
-			_ = f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return p.Apkg.write(dir)
 }

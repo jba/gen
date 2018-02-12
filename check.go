@@ -9,10 +9,14 @@ import (
 	"go/types"
 	"log"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 )
+
+// TODO: with nesting, the package returned from Check isn't suitable for further use
+// because it has the rewritten files of the nested packages in it, and its own references
+// to symbols in those packages have been rewritten. Checking a nested package and instiating it
+// have to follow different code paths.
 
 // Check checks the generic package at path (with respect to dir) for errors. It returns
 // the first error it finds.
@@ -22,7 +26,10 @@ func Check(path, dir string, params []string) (*Package, error) {
 	if err != nil {
 		return nil, err
 	}
-	var importMap map[string]*types.Package
+	return checkPackage(apkg, path, dir, params)
+}
+
+func checkPackage(apkg *astPackage, path, dir string, params []string) (*Package, error) {
 	if len(apkg.genericImports) > 0 {
 		env := map[string]types.Type{}
 		for _, p := range params {
@@ -32,22 +39,16 @@ func Check(path, dir string, params []string) (*Package, error) {
 			}
 			env[p] = typ
 		}
-		// For each generic import, instantiate it with the types given by its binding specs.
-		// This may include the generic type params of this package.
-		// Return a map from path type *types.Package that can be used to import the
-		// instantiated packages.
-		importMap, err = processGenericImports(apkg.genericImports, apkg.fset, dir, env)
+		// For each generic import, instantiate it with the types given by its
+		// binding specs. This may include the generic type params of this package,
+		// so we instantiate into apkg.
+		err := processGenericImports(apkg, dir, env)
 		if err != nil {
-			return nil, err
-		}
-		// We changed the AST, so the fset will be wrong. Reload.
-		if err := apkg.reload(); err != nil {
 			return nil, err
 		}
 	}
 	// Typecheck the package.
-	importer := mapImporter{importMap, theImporter}
-	pkg, err := makePackage(path, apkg, importer)
+	pkg, err := makePackage(path, apkg, theImporter)
 	if err != nil {
 		return nil, err
 	}
@@ -69,46 +70,62 @@ func Check(path, dir string, params []string) (*Package, error) {
 // We instantiate the generic import with the given bindings in memory, with a dummy import path.
 // We change the import statements to have the new path.
 // When we then typecheck the original package, we use an importer that recognizes these new paths.
-func processGenericImports(gis []genericImport, fset *token.FileSet, dir string, env map[string]types.Type) (map[string]*types.Package, error) {
-	packages := map[string]*types.Package{}
-	for _, gi := range gis {
+func processGenericImports(apkg *astPackage, dir string, env map[string]types.Type) error {
+	// Check that all equivalent generic imports use the same name. We depend on that fact when rewriting.
+	for i, gi1 := range apkg.genericImports {
+		for _, gi2 := range apkg.genericImports[i+1:] {
+			if gi1.samePathAndBindings(gi2) && gi1.name != gi2.name {
+				return fmt.Errorf("different names for same generic import: %q and %q", gi1.name, gi2.name)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, gi := range apkg.genericImports {
+		if seen[gi.name] {
+			continue
+		}
+		seen[gi.name] = true
 		var params []string
-		var bsList []string
 		bspecs := map[string]string{}
 		for bs := range gi.bindingSpecs {
-			bsList = append(bsList, bs)
 			param, arg, err := ParseBindingSpec(bs)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			bspecs[param] = arg
 			params = append(params, param)
 		}
-		sort.Strings(bsList)
-		giPathParts := append([]string{"*generic*"}, bsList...)
-		genericImportPath := strings.Join(giPathParts, "/")
-		if packages[genericImportPath] == nil {
-			pkg, err := Check(gi.path, dir, params)
-			if err != nil {
-				return nil, err
+		gpkg, err := Check(gi.path, dir, params)
+		if err != nil {
+			return err
+		}
+		bindings, err := newBindingMap(bspecs, func(name string) types.Type {
+			if t := env[name]; t != nil {
+				return t
 			}
-			bindings, err := newBindingMap(bspecs, func(name string) types.Type {
-				if t := env[name]; t != nil {
-					return t
-				}
-				return lookupBuiltinName(name)
-			})
-			if err != nil {
-				return nil, err
-			}
-			if err := Instantiate(pkg, gi.name, bindings); err != nil {
-				return nil, err
-			}
-			packages[genericImportPath] = pkg.Tpkg
-			gi.spec.Path.Value = strconv.Quote(genericImportPath)
+			return lookupBuiltinName(name)
+		})
+		if err != nil {
+			return err
+		}
+		if err := instantiateInto(gpkg, gi, bindings, apkg); err != nil {
+			return err
 		}
 	}
-	return packages, nil
+	return nil
+}
+
+func makePackage(path string, apkg *astPackage, importer types.Importer) (*Package, error) {
+	tpkg, info, err := typecheckPackage(path, apkg, importer)
+	if err != nil {
+		return nil, err
+	}
+	return &Package{
+		Path: path,
+		Apkg: apkg,
+		Tpkg: tpkg,
+		info: info,
+	}, nil
 }
 
 func typecheckPackage(path string, apkg *astPackage, importer types.Importer) (*types.Package, *types.Info, error) {
@@ -129,19 +146,6 @@ func typecheckPackage(path string, apkg *astPackage, importer types.Importer) (*
 		return nil, nil, fmt.Errorf("typechecker on %s: %v", path, err)
 	}
 	return tpkg, info, nil
-}
-
-func makePackage(path string, apkg *astPackage, importer types.Importer) (*Package, error) {
-	tpkg, info, err := typecheckPackage(path, apkg, importer)
-	if err != nil {
-		return nil, err
-	}
-	return &Package{
-		Path: path,
-		Apkg: apkg,
-		Tpkg: tpkg,
-		info: info,
-	}, nil
 }
 
 type compiledThenSourceImporter struct {
@@ -189,7 +193,7 @@ func paramTypeFromAST(paramName string, apkg *astPackage) (types.Type, error) {
 	if !ok {
 		return nil, fmt.Errorf("obj.Decl is %T, not TypeSpec", obj.Decl)
 	}
-	// TODO(jba): support other types in the package.
+	// TODO: support other types in the package.
 	return typeSpecToType(spec, lookupBuiltinName)
 }
 
@@ -267,6 +271,7 @@ func exprToType(expr ast.Expr, lookupName func(string) types.Type) (types.Type, 
 	}
 }
 
+// Converts an AST interface to a types interface.
 func typeSpecToType(spec *ast.TypeSpec, lookupName func(string) types.Type) (types.Type, error) {
 	tn := types.NewTypeName(token.NoPos, nil, spec.Name.Name, nil)
 	n := types.NewNamed(tn, nil, nil)
@@ -277,15 +282,25 @@ func typeSpecToType(spec *ast.TypeSpec, lookupName func(string) types.Type) (typ
 	var methods []*types.Func
 	var embeddeds []*types.Named // TODO: support embedded types
 	for _, f := range iface.Methods.List {
-		if len(f.Names) != 1 {
+		switch len(f.Names) {
+		case 0: //embedded type
+			// TODO: Use the file's imports to convert the selector expr of f.Type (if present) to
+			// an import path.
+			et, err := exprToType(f.Type, lookupBuiltinName)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Printf("embedded type %s (%T)\n", et, et)
+		case 1:
+			methodName := f.Names[0].Name
+			sig, err := funcTypeToSignature(f.Type.(*ast.FuncType), map[string]types.Type{spec.Name.Name: n})
+			if err != nil {
+				return nil, err
+			}
+			methods = append(methods, types.NewFunc(token.NoPos, nil, methodName, sig))
+		default:
 			return nil, fmt.Errorf("field %#v: names != 1", f)
 		}
-		methodName := f.Names[0].Name
-		sig, err := funcTypeToSignature(f.Type.(*ast.FuncType), map[string]types.Type{spec.Name.Name: n})
-		if err != nil {
-			return nil, err
-		}
-		methods = append(methods, types.NewFunc(token.NoPos, nil, methodName, sig))
 	}
 	u := types.NewInterface(methods, embeddeds)
 	u.Complete()
@@ -608,9 +623,3 @@ func comparableMod(t types.Type, assumeNot types.Type) bool {
 	}
 	return false
 }
-
-// func instantiateImportPaths(fset *token.FileSet, file *ast.File, name, gpath, ipath string) error {
-// 	astutil.DeleteImport(fset, file, gpath)
-// 	astutil.AddNamedImport(fset, file, name, ipath)
-// 	return nil
-// }

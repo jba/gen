@@ -241,7 +241,7 @@ func typeToExpr(typ types.Type, tpkg *types.Package) ast.Expr {
 	case *types.Named:
 		p := typ.Obj().Pkg()
 		n := typ.Obj().Name()
-		if p == tpkg {
+		if p == nil || p == tpkg {
 			return id(n)
 		}
 		return &ast.SelectorExpr{
