@@ -1,5 +1,7 @@
 # gen
 
+This is my personal project, unrelated to my work at Google.
+
 ## Limitations
 
 - Have to invoke manually (not part of Go toolchain). Use "go generate".
